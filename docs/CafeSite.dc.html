@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet">
+</helmet>
+<div data-wf-root="page" style="direction: {{ dirValue }}; font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif; color: #2b211c; background: #fbf7f1; min-height: 100%; text-align: start; overflow: hidden;">
+
+  <header data-wf-el="header" style="position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 34px; background: rgba(251,247,241,0.86); backdrop-filter: blur(10px); border-block-end: 1px solid rgba(43,33,28,0.08);">
+    <div data-wf-el="brand" style="display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; letter-spacing: -0.01em;">
+      <span style="display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #2b211c; color: #f6e3d5; font-family: 'Playfair Display', serif; font-size: 18px;">ي</span>
+      <span>{{ brand }}</span>
+    </div>
+    <nav data-wf-el="nav" style="display: {{ navDisplay }}; align-items: center; gap: 26px; font-size: 14.5px; color: #6b5d54; font-weight: 500;">
+      <sc-for list="{{ nav }}" as="link" hint-placeholder-count="4">
+        <span style="cursor: pointer;">{{ link }}</span>
+      </sc-for>
+    </nav>
+    <button data-wf-el="cta" style="border: none; cursor: pointer; padding: 11px 20px; border-radius: 10px; background: #c24328; color: #fff; font-family: inherit; font-weight: 600; font-size: 14.5px;">{{ ctaLabel }}</button>
+  </header>
+
+  <section data-wf-el="hero" style="background: {{ heroBg }}; padding: 66px 34px 74px;">
+    <div style="max-width: 1040px; margin: 0 auto; display: grid; grid-template-columns: {{ heroCols }}; gap: 44px; align-items: center;">
+      <div>
+        <div style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 999px; background: rgba(194,67,40,0.1); color: #c24328; font-size: 12.5px; font-weight: 600; margin-block-end: 22px;">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: #c24328;"></span>{{ badge }}
+        </div>
+        <h1 data-wf-el="heading" style="font-family: 'Playfair Display', 'IBM Plex Sans Arabic', serif; font-weight: 700; line-height: 1.08; letter-spacing: -0.015em; margin: 0 0 20px; font-size: {{ headingSize }}; color: {{ headingColor }};">{{ heroTitle }}</h1>
+        <p data-wf-el="subheading" style="font-size: 17px; line-height: 1.7; color: #6b5d54; margin: 0 0 30px; max-width: 30em;">{{ heroSub }}</p>
+        <div style="display: flex; align-items: center; gap: 14px;">
+          <button data-wf-el="cta" style="border: none; cursor: pointer; padding: 14px 26px; border-radius: 12px; background: #c24328; color: #fff; font-family: inherit; font-weight: 600; font-size: 15.5px;">{{ ctaLabel }}</button>
+          <button data-wf-el="secondary" style="cursor: pointer; padding: 14px 24px; border-radius: 12px; background: transparent; border: 1px solid rgba(43,33,28,0.18); color: #2b211c; font-family: inherit; font-weight: 600; font-size: 15.5px;">{{ secondaryCta }}</button>
+        </div>
+      </div>
+      <div data-wf-el="hero-image" style="aspect-ratio: 4/5; border-radius: 20px; background: linear-gradient(150deg, #3a2a20 0%, #7c4a2d 48%, #c98a52 100%); box-shadow: 0 30px 60px -28px rgba(58,42,32,0.6); position: relative; overflow: hidden;">
+        <div style="position: absolute; inset-inline-start: 20px; inset-block-end: 20px; color: rgba(255,255,255,0.92); font-weight: 600; font-size: 14px; letter-spacing: 0.02em;">{{ heroImgCaption }}</div>
+        <div style="position: absolute; inset-block-start: 18px; inset-inline-end: 18px; width: 54px; height: 54px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.35); display: grid; place-items: center; color: rgba(255,255,255,0.9); font-family: 'Playfair Display', serif; font-size: 22px;">ي</div>
+      </div>
+    </div>
+  </section>
+
+  <section data-wf-el="menu" style="padding: 60px 34px 20px; max-width: 1040px; margin: 0 auto;">
+    <div style="display: flex; align-items: baseline; justify-content: space-between; margin-block-end: 28px;">
+      <h2 data-wf-el="menu-title" style="font-family: 'Playfair Display','IBM Plex Sans Arabic',serif; font-weight: 700; font-size: 30px; margin: 0; letter-spacing: -0.01em;">{{ menuTitle }}</h2>
+      <span style="color: #a08d80; font-size: 14px;">{{ menuSub }}</span>
+    </div>
+    <div style="display: grid; grid-template-columns: {{ menuCols }}; gap: 16px;">
+      <sc-for list="{{ items }}" as="it" hint-placeholder-count="4">
+        <div data-wf-el="menu-item" style="display: flex; align-items: center; gap: 16px; padding: 16px; border: 1px solid rgba(43,33,28,0.08); border-radius: 14px; background: #fff;">
+          <div style="width: 58px; height: 58px; border-radius: 12px; flex: none; background: linear-gradient(140deg, #e8c9a8, #b9743f);"></div>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-weight: 600; font-size: 16px;">{{ it.name }}</div>
+            <div style="color: #a08d80; font-size: 13.5px; margin-block-start: 3px;">{{ it.desc }}</div>
+          </div>
+          <div style="font-weight: 700; color: #c24328; font-size: 15.5px; white-space: nowrap;">{{ it.price }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <section data-wf-el="about" style="padding: 46px 34px 60px; max-width: 1040px; margin: 0 auto;">
+    <div style="display: grid; grid-template-columns: {{ aboutCols }}; gap: 20px;">
+      <div data-wf-el="about-text" style="padding: 30px; border-radius: 18px; background: #2b211c; color: #f6e3d5;">
+        <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #c98a52; font-weight: 600; margin-block-end: 12px;">{{ aboutKicker }}</div>
+        <p style="font-size: 18px; line-height: 1.7; margin: 0;">{{ aboutBody }}</p>
+      </div>
+      <div data-wf-el="hours" style="padding: 30px; border-radius: 18px; background: #fff; border: 1px solid rgba(43,33,28,0.08);">
+        <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #a08d80; font-weight: 600; margin-block-end: 12px;">{{ hoursKicker }}</div>
+        <div style="font-size: 22px; font-weight: 700; margin-block-end: 6px;">{{ hoursValue }}</div>
+        <div style="color: #6b5d54; font-size: 15px; line-height: 1.6;">{{ address }}</div>
+      </div>
+    </div>
+  </section>
+
+  <footer data-wf-el="footer" style="padding: 26px 34px; border-block-start: 1px solid rgba(43,33,28,0.08); display: flex; align-items: center; justify-content: space-between; color: #a08d80; font-size: 13.5px;">
+    <span>{{ footerLeft }}</span>
+    <span>{{ footerRight }}</span>
+  </footer>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1040,&quot;height&quot;:900},&quot;dir&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;rtl&quot;,&quot;ltr&quot;],&quot;default&quot;:&quot;rtl&quot;,&quot;tsType&quot;:&quot;'rtl'|'ltr'&quot;},&quot;layout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;wide&quot;,&quot;narrow&quot;],&quot;default&quot;:&quot;wide&quot;,&quot;tsType&quot;:&quot;'wide'|'narrow'&quot;},&quot;biggerHeading&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;warmHeading&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;heroTint&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;ctaReserve&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;subReword&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const dir = this.props.dir || 'rtl';
+    const rtl = dir === 'rtl';
+    const e = {
+      bigger: !!this.props.biggerHeading,
+      warm: !!this.props.warmHeading,
+      tint: !!this.props.heroTint,
+      reserve: !!this.props.ctaReserve,
+      sub: !!this.props.subReword,
+    };
+
+    const ar = {
+      brand: 'مقهى الياسمين',
+      nav: ['القائمة', 'عن المقهى', 'المواعيد', 'تواصل معنا'],
+      badge: 'مفتوح الآن · وسط البلد',
+      heroTitle: 'أصالة القهوة المصرية في قلب القاهرة',
+      heroSub: 'قهوة تركي أصلية، حلويات شرقية، وأجواء تعيدك إلى دفء القاهرة القديمة — كل يوم من التاسعة صباحًا.',
+      heroSubAlt: 'تعالَ نشرب قهوة سوا. قهوة تركي على الرمل، كنافة سخنة، وركن هادي في قلب وسط البلد يستنّاك.',
+      cta: 'اطلب الآن',
+      ctaAlt: 'احجز طاولة',
+      secondaryCta: 'شاهد القائمة',
+      heroImgCaption: 'قهوتنا التركية على الرمل',
+      menuTitle: 'قائمتنا',
+      menuSub: 'الأسعار بالجنيه المصري',
+      items: [
+        { name: 'قهوة تركي', desc: 'محمّصة يوميًا على الرمل', price: '٤٥ ج.م' },
+        { name: 'كنافة بالقشطة', desc: 'بالفستق الحلبي', price: '٨٥ ج.م' },
+        { name: 'عصير قصب طازج', desc: 'يُعصر أمامك', price: '٣٠ ج.م' },
+        { name: 'شاي بالنعناع', desc: 'نعناع بلدي طازج', price: '٢٥ ج.م' },
+      ],
+      aboutKicker: 'عن المقهى',
+      aboutBody: 'منذ ٢٠١٨، نقدّم أجود أنواع القهوة المصرية والحلويات الشرقية في قلب وسط البلد، حيث تلتقي الأصالة بالضيافة.',
+      hoursKicker: 'المواعيد',
+      hoursValue: 'يوميًا ٩ص – ١٢م',
+      address: 'شارع شريف، وسط البلد، القاهرة',
+      footerLeft: '© ٢٠٢٦ مقهى الياسمين',
+      footerRight: 'صُنع بـ WebFluent',
+    };
+
+    const en = {
+      brand: 'Yasmine Café',
+      nav: ['Menu', 'About', 'Hours', 'Contact'],
+      badge: 'Open now · Downtown',
+      heroTitle: 'Egyptian coffee tradition, in the heart of Cairo',
+      heroSub: 'Authentic Turkish coffee, Eastern sweets, and the warm spirit of old Cairo — every day from 9 in the morning.',
+      heroSubAlt: 'Come have a coffee with us. Sand-brewed Turkish coffee, warm kunafa, and a quiet corner in the heart of downtown Cairo waiting for you.',
+      cta: 'Order now',
+      ctaAlt: 'Reserve a table',
+      secondaryCta: 'View the menu',
+      heroImgCaption: 'Our sand-brewed Turkish coffee',
+      menuTitle: 'Our Menu',
+      menuSub: 'Prices in Egyptian pounds',
+      items: [
+        { name: 'Turkish Coffee', desc: 'Roasted daily on sand', price: 'EGP 45' },
+        { name: 'Kunafa with Cream', desc: 'With Aleppo pistachio', price: 'EGP 85' },
+        { name: 'Fresh Sugarcane Juice', desc: 'Pressed to order', price: 'EGP 30' },
+        { name: 'Mint Tea', desc: 'Fresh local mint', price: 'EGP 25' },
+      ],
+      aboutKicker: 'About',
+      aboutBody: 'Since 2018, serving the finest Egyptian coffee and Eastern sweets in the heart of downtown Cairo, where tradition meets hospitality.',
+      hoursKicker: 'Hours',
+      hoursValue: 'Daily 9 AM – 12 AM',
+      address: 'Sherif Street, Downtown, Cairo',
+      footerLeft: '© 2026 Yasmine Café',
+      footerRight: 'Made with WebFluent',
+    };
+
+    const c = rtl ? ar : en;
+    const headingSize = e.bigger ? 'clamp(38px, 5.2vw, 60px)' : 'clamp(28px, 3.6vw, 42px)';
+    const headingColor = e.warm ? '#c24328' : '#2b211c';
+    const heroBg = e.tint
+      ? 'radial-gradient(130% 150% at 100% 0%, #f7e2d0 0%, #fbf3ea 58%)'
+      : '#fbf7f1';
+    const ctaLabel = e.reserve ? c.ctaAlt : c.cta;
+    const heroSub = e.sub ? c.heroSubAlt : c.heroSub;
+
+    const narrow = this.props.layout === 'narrow';
+
+    return Object.assign({}, c, {
+      dirValue: dir,
+      rtl,
+      headingSize,
+      headingColor,
+      heroBg,
+      ctaLabel,
+      heroSub,
+      navDisplay: narrow ? 'none' : 'flex',
+      heroCols: narrow ? '1fr' : '1.15fr 0.85fr',
+      menuCols: narrow ? '1fr' : '1fr 1fr',
+      aboutCols: narrow ? '1fr' : '1fr 1fr',
+    });
+  }
+}
+</script>
+</body>
+</html>

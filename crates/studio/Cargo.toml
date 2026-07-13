@@ -9,8 +9,17 @@ name = "wf-studio"
 path = "src/main.rs"
 
 [dependencies]
-wf-core.workspace = true
-wf-preview.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
+wry.workspace = true
+raw-window-handle.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
+
+# The canvas preview webview is built as a child of the gpui window. On Linux
+# that path is webkit2gtk (needs gtk initialised on the main thread) parented
+# into the gpui X11 window — which we locate by `_NET_WM_PID` via x11rb, since
+# gpui's X11 `window_handle()` is unimplemented.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+x11rb = "0.13"
