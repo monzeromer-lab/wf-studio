@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/ai", "crates/preview", "crates/studio"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+wf-core = { path = "crates/core" }
+wf-ai = { path = "crates/ai" }
+wf-preview = { path = "crates/preview" }
+
+webfluent = "=0.5.0-alpha"
+gpui = "0.2.2"
+gpui-component = { version = "0.5.1", features = ["webview"] }
+wry = { package = "lb-wry", version = "=0.53.3" }
+tao = "0.35"
+raw-window-handle = { version = "0.6", features = ["std"] }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+
+# AI provider layer (BYOK). rustls avoids an OpenSSL system dependency; the
+# `stream` feature gives us `bytes_stream()` for SSE. tokio is current-thread
+# only — each provider call drives reqwest on its own thread (see ai::stream).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
+futures-util = "0.3"
+
+# GPUI is unusably slow fully unoptimized; keep our crates fast to compile
+# but optimize dependencies.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 0

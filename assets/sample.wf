@@ -1,0 +1,7 @@
+Page Home (path: "/", title: "مرحبا") {
+    Container {
+        Heading("مرحباً بك في ويب فلونت", h1)
+        Text("موقعك يظهر هنا مباشرة أثناء التعديل.")
+        Button("ابدأ الآن", primary)
+    }
+}

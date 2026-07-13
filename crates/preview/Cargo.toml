@@ -1,0 +1,12 @@
+[package]
+name = "wf-preview"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+wf-core.workspace = true
+anyhow.workspace = true
+async-channel.workspace = true
+tao.workspace = true
+wry.workspace = true

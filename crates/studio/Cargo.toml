@@ -1,0 +1,16 @@
+[package]
+name = "wf-studio"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wf-studio"
+path = "src/main.rs"
+
+[dependencies]
+wf-core.workspace = true
+wf-preview.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+anyhow.workspace = true
