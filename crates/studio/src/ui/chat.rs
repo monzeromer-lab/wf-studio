@@ -105,12 +105,22 @@ fn is_rtl(text: &str) -> bool {
         .any(|c| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF))
 }
 
+/// The bubble's content, shaped exactly as it will be painted.
+struct Shaped {
+    /// Content width (excluding `BUBBLE_H_PAD`) the bubble should use.
+    content_w: Pixels,
+    /// `None` renders `m.text` as a single wrapping GPUI text element, same
+    /// as before (works fine for LTR). `Some(lines)` renders one plain,
+    /// non-wrapping element per entry instead — see the comment below.
+    rtl_lines: Option<Vec<SharedString>>,
+}
+
 /// Shape `text` the same way it will actually be painted (same font, size,
-/// and line height as `message_row` below) to get its *real* content width
-/// — so the bubble can be given that width directly instead of asking
-/// GPUI's flex layout to shrink-and-wrap it, which has proven unreliable for
-/// a "hug content up to a cap" box.
-fn bubble_width(text: &SharedString, window: &Window) -> Pixels {
+/// and line height as `message_row` below) to get its *real* content size
+/// — so the bubble can be given that size directly instead of asking GPUI's
+/// flex layout to shrink-and-wrap it, which has proven unreliable for a
+/// "hug content up to a cap" box.
+fn shape_bubble_text(text: &SharedString, window: &Window) -> Shaped {
     // `window.text_style()` here reflects the *default* ambient style
     // (`.SystemUIFont`), not `theme::FONT_UI` — the root `.font_family()` in
     // `ui/mod.rs` only applies once GPUI actually walks the tree we're still
@@ -119,36 +129,64 @@ fn bubble_width(text: &SharedString, window: &Window) -> Pixels {
     let mut style = window.text_style();
     style.font_family = theme::FONT_UI.into();
     let run = style.to_run(text.len());
+    let wrap_width = px(BUBBLE_MAX_CONTENT_W);
+    let lines = window
+        .text_system()
+        .shape_text(text.clone(), BUBBLE_FONT_SIZE, &[run], Some(wrap_width), None)
+        .unwrap_or_default();
+    let multiline = lines.iter().any(|l| !l.wrap_boundaries.is_empty());
+
+    if !is_rtl(text) {
+        let content_w = if multiline {
+            wrap_width
+        } else {
+            lines.iter().fold(px(0.0), |w, l| w.max(l.size(BUBBLE_LINE_HEIGHT).width))
+        };
+        return Shaped { content_w, rtl_lines: None };
+    }
+
     // GPUI's own wrapped-line painter (`paint_line` in gpui's text_system)
     // recomputes each visual sub-line's start position by accumulating
     // per-glyph advances that assume left-to-right order; for a bidi/RTL
     // run that wraps into multiple visual lines, the glyphs end up painted
-    // completely off the bubble instead of inside it. Sidestepping it here:
-    // never wrap RTL text, and let the bubble grow to fit it on one line
-    // instead of capping at `BUBBLE_MAX_CONTENT_W`.
-    let wrap_width = if is_rtl(text) { None } else { Some(px(BUBBLE_MAX_CONTENT_W)) };
-    let lines = window
-        .text_system()
-        .shape_text(text.clone(), BUBBLE_FONT_SIZE, &[run], wrap_width, None)
-        .unwrap_or_default();
-    let content_w = lines
-        .iter()
-        .fold(px(0.0), |w, line| w.max(line.size(BUBBLE_LINE_HEIGHT).width));
-    px(f32::from(content_w) + 2.0 * BUBBLE_H_PAD)
+    // completely off the bubble instead of inside it. Sidestep it entirely:
+    // GPUI's *wrap-boundary computation* is still correct (only painting a
+    // multi-line wrap is broken), so use it to split the text into separate
+    // single-line substrings and render each as its own text element — a
+    // single line never has wrap boundaries of its own, so it can never hit
+    // the buggy code path.
+    let mut rtl_lines = Vec::new();
+    for line in &lines {
+        let mut start = 0usize;
+        for boundary in &line.wrap_boundaries {
+            let end = line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index;
+            rtl_lines.push(SharedString::from(text[start..end].trim().to_string()));
+            start = end;
+        }
+        rtl_lines.push(SharedString::from(text[start..].trim().to_string()));
+    }
+    let content_w = if multiline {
+        wrap_width
+    } else {
+        lines.iter().fold(px(0.0), |w, l| w.max(l.size(BUBBLE_LINE_HEIGHT).width))
+    };
+    Shaped { content_w, rtl_lines: Some(rtl_lines) }
 }
 
 fn message_row(i: usize, m: &Message, window: &Window) -> impl IntoElement {
     let (bg, fg, border) = bubble_tones(m);
+    let shaped = shape_bubble_text(&m.text, window);
     let mut bubble = v_flex()
         .id(("msg-bubble", i))
-        .w(bubble_width(&m.text, window))
+        .w(px(f32::from(shaped.content_w) + 2.0 * BUBBLE_H_PAD))
         .px(px(BUBBLE_H_PAD))
         .py(px(9.0))
         .rounded(px(13.0))
         .bg(bg)
         .text_color(fg)
         .text_size(BUBBLE_FONT_SIZE)
-        .line_height(BUBBLE_LINE_HEIGHT);
+        .line_height(BUBBLE_LINE_HEIGHT)
+        .when(shaped.rtl_lines.is_some(), |d| d.text_right());
     if let Some(border) = border {
         bubble = bubble.border_1().border_color(border);
     }
@@ -168,7 +206,10 @@ fn message_row(i: usize, m: &Message, window: &Window) -> impl IntoElement {
             })),
         );
     }
-    bubble = bubble.child(m.text.clone());
+    bubble = match shaped.rtl_lines {
+        Some(lines) => bubble.children(lines.into_iter().map(|line| div().child(line))),
+        None => bubble.child(m.text.clone()),
+    };
 
     h_flex()
         .w_full()

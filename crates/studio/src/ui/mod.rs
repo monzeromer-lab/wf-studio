@@ -4,7 +4,7 @@
 mod canvas;
 mod chat;
 mod onboarding;
-mod overlays;
+pub(crate) mod overlays;
 mod sidebar;
 mod title_bar;
 mod toolbar;
@@ -29,8 +29,6 @@ pub fn render(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>)
             Screen::Onboarding => onboarding::render(app, window, cx).into_any_element(),
             Screen::Studio => studio_body(app, window, cx).into_any_element(),
         })
-        .when(app.show_settings, |this| this.child(overlays::settings(app, window, cx)))
-        .when(app.show_activity, |this| this.child(overlays::activity(app, cx)))
         .when(app.show_skills, |this| this.child(overlays::skills(app, cx)))
         .when(app.toast, |this| this.child(overlays::toast(app, cx)))
         .into_any_element()
@@ -38,7 +36,7 @@ pub fn render(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>)
 
 /// The three-column studio (chat · canvas · sidebar) plus the overlay layer.
 fn studio_body(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>) -> AnyElement {
-    let show_right = app.review_open || app.show_history;
+    let show_right = app.review_open || app.show_history || app.show_activity;
 
     v_flex()
         .relative()

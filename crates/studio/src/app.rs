@@ -14,7 +14,11 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use gpui::{Context, Entity, PathPromptOptions, SharedString, Task, Window, prelude::*};
+use gpui::{
+    Context, Entity, PathPromptOptions, SharedString, Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    prelude::*, px, size,
+};
+use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::webview::WebView;
 use wry::{
@@ -84,6 +88,12 @@ pub struct StudioApp {
     pub clock: u32,
     /// The embedded website-preview webview (`None` if the embed failed).
     pub preview: Option<Entity<WebView>>,
+    /// The separate Settings window, if currently open (see
+    /// `open_settings_window`). Its root view is `gpui_component::Root`
+    /// (wrapping `SettingsWindow`), same as the main window — several
+    /// gpui_component widgets (e.g. `Input`) assume every window's root is a
+    /// `Root` and panic otherwise.
+    settings_window: Option<WindowHandle<Root>>,
     pipeline_task: Option<Task<()>>,
     hint_task: Option<Task<()>>,
     next_id: u64,
@@ -191,6 +201,7 @@ impl StudioApp {
             activity: Vec::new(),
             clock: 634,
             preview,
+            settings_window: None,
             pipeline_task: None,
             hint_task: None,
             next_id: 0,
@@ -743,9 +754,64 @@ impl StudioApp {
 
     // ── menus & settings ────────────────────────────────────────────────────
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.show_settings = !self.show_settings;
         self.show_activity = false;
+        if self.show_settings {
+            self.show_settings = false;
+            if let Some(handle) = self.settings_window.take() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        } else {
+            self.show_settings = true;
+            self.open_settings_window(cx);
+        }
         cx.notify();
+    }
+    /// Open the Settings window, or focus it if it's already open. A real,
+    /// separate OS window rather than an absolutely-positioned popover,
+    /// since the embedded preview webview always paints above anything
+    /// GPUI draws on top of it in the *same* window — a popover over the
+    /// canvas could never actually appear above the preview.
+    fn open_settings_window(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.settings_window
+            && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
+        {
+            return;
+        }
+        // `cx.open_window` forces the new window to draw once, synchronously,
+        // before returning — which calls back into `StudioApp` (via
+        // `SettingsWindow::render`'s `app.update(...)`) while *this* update
+        // (the click listener that got us here) is still on the stack,
+        // panicking ("cannot update StudioApp while it is already being
+        // updated"). `cx.defer` runs after the current update cycle finishes
+        // and the entity is returned to the app, so by the time it runs,
+        // opening the window (and its forced first draw) is no longer
+        // reentrant.
+        let app = cx.entity();
+        cx.defer(move |cx| {
+            let opts = WindowOptions {
+                window_bounds: Some(WindowBounds::centered(size(px(420.0), px(600.0)), cx)),
+                titlebar: Some(TitlebarOptions { title: Some("Settings".into()), ..Default::default() }),
+                window_min_size: Some(size(px(380.0), px(420.0))),
+                ..Default::default()
+            };
+            let app_for_window = app.clone();
+            let opened = cx.open_window(opts, move |window, cx| {
+                let app_for_close = app_for_window.clone();
+                window.on_window_should_close(cx, move |_, cx| {
+                    app_for_close.update(cx, |app, cx| {
+                        app.show_settings = false;
+                        app.settings_window = None;
+                        cx.notify();
+                    });
+                    true
+                });
+                let settings = cx.new(|_| SettingsWindow { app: app_for_window });
+                cx.new(|cx| Root::new(settings, window, cx))
+            });
+            if let Ok(handle) = opened {
+                app.update(cx, |app, _| app.settings_window = Some(handle));
+            }
+        });
     }
     pub fn toggle_activity(&mut self, cx: &mut Context<Self>) {
         self.show_activity = !self.show_activity;
@@ -772,11 +838,6 @@ impl StudioApp {
         self.heal_attempts = n;
         cx.notify();
     }
-    pub fn close_menus(&mut self, cx: &mut Context<Self>) {
-        self.show_settings = false;
-        self.show_activity = false;
-        cx.notify();
-    }
     pub fn set_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.model = model.to_string().into();
         cx.notify();
@@ -786,6 +847,7 @@ impl StudioApp {
         self.show_activity = false;
         self.status = if self.generated { Status::Compiled } else { Status::Idle };
         self.error_action = None;
+        self.open_settings_window(cx);
         cx.notify();
     }
 
@@ -844,6 +906,18 @@ impl StudioApp {
 impl Render for StudioApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         ui::render(self, window, cx)
+    }
+}
+
+/// Root view of the separate Settings window (see `StudioApp::open_settings_window`).
+struct SettingsWindow {
+    app: Entity<StudioApp>,
+}
+
+impl Render for SettingsWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let app = self.app.clone();
+        app.update(cx, |app, cx| ui::overlays::settings(app, window, cx).into_any_element())
     }
 }
 

@@ -1,5 +1,11 @@
-//! Right sidebar: the Visual Diff Review panel (FR-7) or the Version History
-//! panel (FR-14), whichever is open.
+//! Right sidebar: the Visual Diff Review panel (FR-7), the Version History
+//! panel (FR-14), or the Activity log (FR-21), whichever is open. All three
+//! live here (rather than as an absolutely-positioned popover over the
+//! canvas) so the canvas shrinks to make room for them through ordinary
+//! flex layout — the embedded preview webview always paints above anything
+//! GPUI draws on top of it, so a popover floating over the canvas can never
+//! actually appear above the preview; a sidebar that the canvas's own width
+//! flexes around doesn't have that problem.
 
 use gpui::{Context, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, v_flex};
@@ -22,8 +28,79 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
         panel = panel.child(review(app, cx));
     } else if app.show_history {
         panel = panel.child(history(app, cx));
+    } else if app.show_activity {
+        panel = panel.child(activity(app, cx));
     }
     panel
+}
+
+fn activity(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    let (status_label, status_color) = app.status.label_color(app.generated);
+    v_flex()
+        .flex_1()
+        .min_h_0()
+        .child(
+            h_flex()
+                .flex_none()
+                .items_center()
+                .justify_between()
+                .px(px(18.0))
+                .pt(px(18.0))
+                .pb(px(14.0))
+                .border_b_1()
+                .border_color(theme::hairline())
+                .child(div().font_family(theme::FONT_DISPLAY).font_semibold().text_size(px(16.0)).child("Activity"))
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(div().text_size(px(12.0)).font_semibold().text_color(status_color).child(status_label))
+                        .child(
+                            div()
+                                .id("close-activity")
+                                .size(px(26.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(7.0))
+                                .text_color(theme::muted())
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme::white(0.05)))
+                                .child(icon("close", 15.0, theme::muted()))
+                                .on_click(cx.listener(|a, _, _, cx| a.toggle_activity(cx))),
+                        ),
+                ),
+        )
+        .child(
+            v_flex()
+                .id("activity-body")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(6.0))
+                .py(px(8.0))
+                .when(app.activity.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .py(px(34.0))
+                            .px(px(16.0))
+                            .text_center()
+                            .text_size(px(13.0))
+                            .text_color(theme::faint())
+                            .line_height(px(21.0))
+                            .child("Nothing yet. Generate a site and every compile step and auto-fix shows up here."),
+                    )
+                })
+                .children(app.activity.iter().map(|a| {
+                    h_flex()
+                        .gap(px(11.0))
+                        .px(px(11.0))
+                        .py(px(9.0))
+                        .items_start()
+                        .child(div().flex_none().size(px(8.0)).mt(px(5.0)).rounded_full().bg(a.tone.dot()))
+                        .child(div().flex_1().text_size(px(13.0)).text_color(theme::text_soft()).line_height(px(19.0)).child(a.text.clone()))
+                })),
+        )
 }
 
 fn review(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {

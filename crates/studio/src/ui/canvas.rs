@@ -3,9 +3,9 @@
 //! frame. Because webkit paints above GPUI content *regardless of element
 //! order*, it is hidden whenever a native overlay (empty state, busy, error)
 //! must cover the *entire* canvas, and its frame is narrowed (not hidden)
-//! when a popover (Settings/Activity) only needs to cover the canvas's
-//! right edge — narrowing physically moves the embedded window out from
-//! under the popover instead of trying to out-of-order it on top.
+//! when the Settings popover only needs to cover the canvas's right edge —
+//! narrowing physically moves the embedded window out from under the
+//! popover instead of trying to out-of-order it on top.
 
 use gpui::{Context, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, v_flex};
@@ -59,19 +59,15 @@ fn preview_frame(app: &StudioApp) -> impl IntoElement {
     } else {
         30.0
     };
-    // Settings/Activity are popovers anchored to the window's top-right,
-    // absolutely positioned over the canvas (see `overlays.rs`). Since the
-    // embedded webview always paints above them regardless, reserve enough
-    // right padding to clear each popover's own left edge (`right` offset +
-    // width from `overlays.rs`, plus a small gap) so the popover ends up
-    // over bare canvas background instead of the webview.
-    let extra_right = if app.show_settings {
-        374.0 + 16.0
-    } else if app.show_activity {
-        432.0 + 16.0
-    } else {
-        0.0
-    };
+    // Settings is a popover anchored to the window's top-right, absolutely
+    // positioned over the canvas (see `overlays.rs`). Since the embedded
+    // webview always paints above it regardless, reserve enough right
+    // padding to clear its left edge (`right` offset + width from
+    // `overlays.rs`, plus a small gap) so it ends up over bare canvas
+    // background instead of the webview. Activity/History/Review don't need
+    // this — they live in the sidebar (`sidebar.rs`), which the canvas
+    // shrinks to make room for through ordinary flex layout.
+    let extra_right = if app.show_settings { 374.0 + 16.0 } else { 0.0 };
 
     div()
         .absolute()

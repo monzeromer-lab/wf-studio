@@ -1,7 +1,16 @@
-//! Layered popovers over the studio: the Settings dropdown (provider/key/model),
-//! the Skills popover, the Activity log (FR-21), and the needs-attention toast
-//! (FR-22). Each dims-and-catches outside clicks with a full-bleed backdrop
-//! sibling painted *under* the panel.
+//! Popovers still living directly over the canvas/chat: the Skills popover
+//! and the needs-attention toast (FR-22). Each dims-and-catches outside
+//! clicks with a full-bleed backdrop sibling painted *under* the panel
+//! (`.occlude()`d so clicks on the panel itself don't reach it).
+//!
+//! Settings and Activity *used to* live here too, as absolutely-positioned
+//! popovers, but the embedded preview webview always paints above anything
+//! GPUI draws on top of it in the same window, so neither could ever
+//! actually appear above the preview where they overlapped it. Settings now
+//! opens in its own OS window (`SettingsWindow`, see `app.rs`) — this module
+//! still renders its content (`settings`, below), just without the popover
+//! positioning/backdrop. Activity moved into the sidebar (`sidebar.rs`),
+//! which the canvas shrinks to make room for through ordinary flex layout.
 
 use gpui::{App, ClickEvent, Context, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, input::Input, v_flex};
@@ -34,25 +43,28 @@ pub fn settings(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioAp
         _ => theme::white(0.1),
     };
 
-    let panel = div()
-        .absolute()
-        .occlude()
-        .top(px(4.0))
-        .right(px(12.0))
-        .w(px(362.0))
+    v_flex()
+        .size_full()
         .bg(theme::panel())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(14.0))
-        .shadow_lg()
-        .overflow_hidden()
-        .child(div().px(px(16.0)).py(px(14.0)).border_b_1().border_color(theme::hairline()).font_family(theme::FONT_DISPLAY).font_semibold().text_size(px(14.5)).child("Settings"))
+        .child(
+            div()
+                .flex_none()
+                .px(px(16.0))
+                .py(px(14.0))
+                .border_b_1()
+                .border_color(theme::hairline())
+                .font_family(theme::FONT_DISPLAY)
+                .font_semibold()
+                .text_size(px(14.5))
+                .child("Settings"),
+        )
         .child(
             v_flex()
                 .id("settings-body")
+                .flex_1()
+                .min_h_0()
                 .px(px(16.0))
                 .py(px(14.0))
-                .max_h(px(560.0))
                 .overflow_y_scroll()
                 .child(label("AI Provider"))
                 .child(h_flex().mt(px(9.0)).flex_wrap().gap(px(6.0)).children(PROVIDERS.iter().map(|p| provider_mini(app, p.id, cx))))
@@ -113,9 +125,7 @@ pub fn settings(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioAp
                         .on_click(cx.listener(|a, _, _, cx| a.toggle_advanced(cx))),
                 )
                 .when(app.show_advanced, |this| this.child(advanced(app, cx))),
-        );
-    let close = cx.listener(|a, _, _, cx| a.close_menus(cx));
-    layer("settings-back", close, panel)
+        )
 }
 
 fn provider_mini(app: &StudioApp, id: ProviderId, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
@@ -311,66 +321,6 @@ pub fn skills(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement 
         );
     let close = cx.listener(|a, _, _, cx| a.close_skills(cx));
     layer("skills-back", close, panel)
-}
-
-pub fn activity(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
-    let (status_label, status_color) = app.status.label_color(app.generated);
-    let panel = v_flex()
-        .absolute()
-        .occlude()
-        .top(px(4.0))
-        .right(px(84.0))
-        .w(px(348.0))
-        .max_h(px(420.0))
-        .bg(theme::panel())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(14.0))
-        .shadow_lg()
-        .overflow_hidden()
-        .child(
-            h_flex()
-                .items_center()
-                .justify_between()
-                .px(px(16.0))
-                .py(px(14.0))
-                .border_b_1()
-                .border_color(theme::hairline())
-                .child(div().font_family(theme::FONT_DISPLAY).font_semibold().text_size(px(14.5)).child("Activity"))
-                .child(div().text_size(px(12.0)).font_semibold().text_color(status_color).child(status_label)),
-        )
-        .child(
-            v_flex()
-                .id("activity-body")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .px(px(6.0))
-                .py(px(8.0))
-                .when(app.activity.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .py(px(34.0))
-                            .px(px(16.0))
-                            .text_center()
-                            .text_size(px(13.0))
-                            .text_color(theme::faint())
-                            .line_height(px(21.0))
-                            .child("Nothing yet. Generate a site and every compile step and auto-fix shows up here."),
-                    )
-                })
-                .children(app.activity.iter().map(|a| {
-                    h_flex()
-                        .gap(px(11.0))
-                        .px(px(11.0))
-                        .py(px(9.0))
-                        .items_start()
-                        .child(div().flex_none().size(px(8.0)).mt(px(5.0)).rounded_full().bg(a.tone.dot()))
-                        .child(div().flex_1().text_size(px(13.0)).text_color(theme::text_soft()).line_height(px(19.0)).child(a.text.clone()))
-                })),
-        );
-    let close = cx.listener(|a, _, _, cx| a.close_menus(cx));
-    layer("activity-back", close, panel)
 }
 
 pub fn toast(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
