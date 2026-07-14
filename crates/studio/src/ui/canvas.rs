@@ -1,8 +1,11 @@
 //! Center canvas. The generated website renders in an **embedded webview**
 //! (built as a child of the gpui window in `crate::app`) sized to the device
-//! frame. Because webkit paints above GPUI content, the webview is hidden
-//! whenever a native overlay (empty state, busy, error) must draw over the
-//! canvas.
+//! frame. Because webkit paints above GPUI content *regardless of element
+//! order*, it is hidden whenever a native overlay (empty state, busy, error)
+//! must cover the *entire* canvas, and its frame is narrowed (not hidden)
+//! when a popover (Settings/Activity) only needs to cover the canvas's
+//! right edge — narrowing physically moves the embedded window out from
+//! under the popover instead of trying to out-of-order it on top.
 
 use gpui::{Context, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, v_flex};
@@ -14,14 +17,9 @@ use crate::ui::widgets::{brand_badge, icon};
 
 pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
     let show_empty = !app.generated && !app.busy && app.status != Status::Error;
-    // The webview renders above GPUI *no matter where it sits in the element
-    // tree* (it's a real, separate child window, not GPUI-painted content),
-    // so it must be hidden for any overlay that needs to cover it — not just
-    // the canvas's own busy/error/empty states, but the settings/activity/
-    // skills popovers and the toast too, all of which are plain GPUI content
-    // rendered elsewhere in the tree.
-    let overlay_open = app.show_settings || app.show_activity || app.show_skills || app.toast;
-    let show_preview = app.generated && !app.busy && app.status != Status::Error && !overlay_open;
+    // The webview renders above GPUI, so it may only be visible when no overlay
+    // needs to cover the canvas.
+    let show_preview = app.generated && !app.busy && app.status != Status::Error;
 
     if let Some(preview) = &app.preview {
         preview.update(cx, |w, _| {
@@ -61,11 +59,25 @@ fn preview_frame(app: &StudioApp) -> impl IntoElement {
     } else {
         30.0
     };
+    // Settings/Activity are popovers anchored to the window's top-right,
+    // absolutely positioned over the canvas (see `overlays.rs`). Since the
+    // embedded webview always paints above them regardless, reserve enough
+    // right padding to clear each popover's own left edge (`right` offset +
+    // width from `overlays.rs`, plus a small gap) so the popover ends up
+    // over bare canvas background instead of the webview.
+    let extra_right = if app.show_settings {
+        374.0 + 16.0
+    } else if app.show_activity {
+        432.0 + 16.0
+    } else {
+        0.0
+    };
 
     div()
         .absolute()
         .inset_0()
         .p(px(pad))
+        .pr(px(pad + extra_right))
         .flex()
         .justify_center()
         .child(

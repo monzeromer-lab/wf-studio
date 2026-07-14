@@ -36,6 +36,7 @@ pub fn settings(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioAp
 
     let panel = div()
         .absolute()
+        .occlude()
         .top(px(4.0))
         .right(px(12.0))
         .w(px(362.0))
@@ -244,6 +245,7 @@ fn setting_toggle(
 pub fn skills(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
     let panel = v_flex()
         .absolute()
+        .occlude()
         .bottom(px(96.0))
         .left(px(14.0))
         .w(px(330.0))
@@ -315,6 +317,7 @@ pub fn activity(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElemen
     let (status_label, status_color) = app.status.label_color(app.generated);
     let panel = v_flex()
         .absolute()
+        .occlude()
         .top(px(4.0))
         .right(px(84.0))
         .w(px(348.0))

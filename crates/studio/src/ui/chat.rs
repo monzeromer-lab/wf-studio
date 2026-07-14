@@ -1,7 +1,7 @@
 //! Left chat panel: assistant header, the message transcript, and the prompt
 //! dock (attachments, skills, try-row, textarea, send).
 
-use gpui::{Context, Hsla, Window, div, prelude::*, px};
+use gpui::{Context, Hsla, Pixels, SharedString, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, input::Input, v_flex};
 
 use crate::app::StudioApp;
@@ -9,7 +9,7 @@ use crate::state::{Message, Role, Tone};
 use crate::theme;
 use crate::ui::widgets::{brand_badge, dot, icon};
 
-pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
+pub fn render(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
     v_flex()
         .h_full()
         .flex_none()
@@ -18,7 +18,7 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
         .border_r_1()
         .border_color(theme::hairline())
         .child(header(app))
-        .child(messages(app))
+        .child(messages(app, window))
         .child(dock(app, cx))
 }
 
@@ -50,7 +50,7 @@ fn header(app: &StudioApp) -> impl IntoElement {
         )
 }
 
-fn messages(app: &StudioApp) -> impl IntoElement {
+fn messages(app: &StudioApp, window: &Window) -> impl IntoElement {
     let empty = app.messages.is_empty();
     let mut list = v_flex()
         .id("messages")
@@ -73,7 +73,7 @@ fn messages(app: &StudioApp) -> impl IntoElement {
                 .child("Tell me what to build or change \u{2014} in Arabic or English. Attach a photo or logo with the clip, and I\u{2019}ll fold it into the design. You review every change before it sticks."),
         );
     } else {
-        list = list.children(app.messages.iter().map(message_row));
+        list = list.children(app.messages.iter().enumerate().map(|(i, m)| message_row(i, m, window)));
     }
 
     if app.busy {
@@ -92,18 +92,63 @@ fn messages(app: &StudioApp) -> impl IntoElement {
     list
 }
 
-fn message_row(m: &Message) -> impl IntoElement {
+/// The bubble's max content width (excluding the `BUBBLE_H_PAD` padding).
+const BUBBLE_MAX_CONTENT_W: f32 = 272.0 - 2.0 * BUBBLE_H_PAD;
+const BUBBLE_H_PAD: f32 = 12.0;
+const BUBBLE_FONT_SIZE: Pixels = px(13.0);
+const BUBBLE_LINE_HEIGHT: Pixels = px(19.0);
+
+/// Rough RTL detection (Arabic script + presentation-form blocks) — enough
+/// for this app's bilingual Arabic/English content. See `bubble_width`.
+fn is_rtl(text: &str) -> bool {
+    text.chars()
+        .any(|c| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF))
+}
+
+/// Shape `text` the same way it will actually be painted (same font, size,
+/// and line height as `message_row` below) to get its *real* content width
+/// — so the bubble can be given that width directly instead of asking
+/// GPUI's flex layout to shrink-and-wrap it, which has proven unreliable for
+/// a "hug content up to a cap" box.
+fn bubble_width(text: &SharedString, window: &Window) -> Pixels {
+    // `window.text_style()` here reflects the *default* ambient style
+    // (`.SystemUIFont`), not `theme::FONT_UI` — the root `.font_family()` in
+    // `ui/mod.rs` only applies once GPUI actually walks the tree we're still
+    // building, which hasn't happened yet. Shaping with the wrong font here
+    // would measure something other than what's actually painted.
+    let mut style = window.text_style();
+    style.font_family = theme::FONT_UI.into();
+    let run = style.to_run(text.len());
+    // GPUI's own wrapped-line painter (`paint_line` in gpui's text_system)
+    // recomputes each visual sub-line's start position by accumulating
+    // per-glyph advances that assume left-to-right order; for a bidi/RTL
+    // run that wraps into multiple visual lines, the glyphs end up painted
+    // completely off the bubble instead of inside it. Sidestepping it here:
+    // never wrap RTL text, and let the bubble grow to fit it on one line
+    // instead of capping at `BUBBLE_MAX_CONTENT_W`.
+    let wrap_width = if is_rtl(text) { None } else { Some(px(BUBBLE_MAX_CONTENT_W)) };
+    let lines = window
+        .text_system()
+        .shape_text(text.clone(), BUBBLE_FONT_SIZE, &[run], wrap_width, None)
+        .unwrap_or_default();
+    let content_w = lines
+        .iter()
+        .fold(px(0.0), |w, line| w.max(line.size(BUBBLE_LINE_HEIGHT).width));
+    px(f32::from(content_w) + 2.0 * BUBBLE_H_PAD)
+}
+
+fn message_row(i: usize, m: &Message, window: &Window) -> impl IntoElement {
     let (bg, fg, border) = bubble_tones(m);
     let mut bubble = v_flex()
-        .max_w(px(272.0))
-        .min_w_0()
-        .px(px(12.0))
+        .id(("msg-bubble", i))
+        .w(bubble_width(&m.text, window))
+        .px(px(BUBBLE_H_PAD))
         .py(px(9.0))
         .rounded(px(13.0))
         .bg(bg)
         .text_color(fg)
-        .text_size(px(13.0))
-        .line_height(px(19.0));
+        .text_size(BUBBLE_FONT_SIZE)
+        .line_height(BUBBLE_LINE_HEIGHT);
     if let Some(border) = border {
         bubble = bubble.border_1().border_color(border);
     }
@@ -123,7 +168,7 @@ fn message_row(m: &Message) -> impl IntoElement {
             })),
         );
     }
-    bubble = bubble.child(div().w_full().min_w_0().child(m.text.clone()));
+    bubble = bubble.child(m.text.clone());
 
     h_flex()
         .w_full()
