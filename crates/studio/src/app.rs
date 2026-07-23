@@ -11,14 +11,11 @@
 //! GPUI's loop.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use gpui::{
-    Context, Entity, PathPromptOptions, SharedString, Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
-    prelude::*, px, size,
-};
-use gpui_component::Root;
+use gpui::{Context, Entity, SharedString, Task, Window, prelude::*};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::webview::WebView;
 use wry::{
@@ -32,70 +29,83 @@ use crate::{ipc, site, ui};
 /// The custom-protocol origin for the preview webview.
 const ORIGIN: &str = "wf://localhost";
 
-/// One step of a status pipeline (mock `pipeline(steps, done)`).
-pub struct Step {
-    pub status: Status,
-    pub label: SharedString,
-    pub dur_ms: u64,
-    pub activity: Option<(Tone, SharedString)>,
-}
-
-impl Step {
-    fn new(status: Status, label: impl Into<SharedString>, dur_ms: u64) -> Self {
-        Self { status, label: label.into(), dur_ms, activity: None }
-    }
-    fn log(mut self, tone: Tone, text: impl Into<SharedString>) -> Self {
-        self.activity = Some((tone, text.into()));
-        self
-    }
-}
-
 pub struct StudioApp {
     pub screen: Screen,
     pub ob_step: u8,
-    pub show_advanced: bool,
     pub provider: ProviderId,
-    pub model: SharedString,
     pub api_key: Entity<InputState>,
-    pub tested: Tested,
     pub dir: Dir,
     pub device: Device,
     pub generated: bool,
     pub status: Status,
-    pub sub_label: SharedString,
     pub busy: bool,
     pub prompt: Entity<InputState>,
-    pub sel: Vec<Selection>,
     pub messages: Vec<Message>,
-    pub attachments: Vec<Attachment>,
-    pub active_skills: Vec<SkillId>,
-    pub show_skills: bool,
     pub review_open: bool,
-    pub chips: Vec<Chip>,
-    pub applied_edits: AppliedEdits,
-    pub show_settings: bool,
-    pub show_activity: bool,
-    pub show_history: bool,
-    pub toast: bool,
-    pub error_action: Option<ErrorAction>,
-    pub dock_hint: SharedString,
-    pub dock_shake: bool,
     pub pruning: bool,
     pub caching: bool,
     pub heal_attempts: u8,
-    pub history: Vec<Checkpoint>,
-    pub activity: Vec<ActivityItem>,
-    pub clock: u32,
+    // ── shell: auth, home, projects, modals (cinematic redesign) ────────────
+    pub login_email: Entity<InputState>,
+    pub login_pw: Entity<InputState>,
+    pub login_busy: bool,
+    pub home_filter: HomeFilter,
+    pub projects: Vec<Project>,
+    pub current_project: Option<SharedString>,
+    pub new_type: ProjectKind,
+    pub modal: Option<Modal>,
+    pub conn_mode: ConnMode,
+    pub acp_url: Entity<InputState>,
+    pub acp_connected: bool,
+    // ── workspace: composer, selection, inspector, review, blocks ───────────
+    pub chat_open: bool,
+    pub panel_open: bool,
+    pub chat_menu: Option<ChatMenu>,
+    pub ds_picker_open: bool,
+    pub api_panel_open: bool,
+    pub chat_model: SharedString,
+    pub effort: Effort,
+    pub permission: Permission,
+    pub skills: Vec<usize>,
+    pub api_spec: Option<ApiSpec>,
+    pub spa_mode: bool,
+    pub applied_ds: Option<SharedString>,
+    pub pending_ds: Option<SharedString>,
+    pub selection: Vec<SharedString>,
+    pub edits: HashMap<SharedString, ElEdit>,
+    pub added_blocks: Vec<BlockType>,
+    pub event_order: [usize; 3],
+    pub keeps: [bool; 5],
+    pub review_split: f32,
+    pub outline_collapsed: Vec<SharedString>,
+    pub compile_step: u8,
+    // ── design-system workspace: tabs, tokens, live specimens ───────────────
+    pub ds_tab: DsTab,
+    pub ds_sel: Option<DsSel>,
+    pub ds_rtl: bool,
+    pub ds_colors: Vec<DsColorToken>,
+    pub ds_types: Vec<DsTypeToken>,
+    pub ds_demo: DsDemo,
+    // ── modals: publish, settings, share, mcp, toast ────────────────────────
+    pub publish_tab: PublishTab,
+    pub deploying: bool,
+    pub published: bool,
+    pub export_kind: ExportKind,
+    pub settings_tab: SettingsTab,
+    pub share_role: ShareRole,
+    pub link_access: LinkAccess,
+    pub collab_mk: ShareRole,
+    pub collab_ah: ShareRole,
+    pub share_menu: Option<ShareMenu>,
+    pub mcp_list: Vec<McpServer>,
+    pub mcp_name: Entity<InputState>,
+    pub mcp_cmd: Entity<InputState>,
+    mcp_next_id: u64,
+    pub toast_note: Option<Toast>,
+    toast_task: Option<Task<()>>,
     /// The embedded website-preview webview (`None` if the embed failed).
     pub preview: Option<Entity<WebView>>,
-    /// The separate Settings window, if currently open (see
-    /// `open_settings_window`). Its root view is `gpui_component::Root`
-    /// (wrapping `SettingsWindow`), same as the main window — several
-    /// gpui_component widgets (e.g. `Input`) assume every window's root is a
-    /// `Root` and panic otherwise.
-    settings_window: Option<WindowHandle<Root>>,
     pipeline_task: Option<Task<()>>,
-    hint_task: Option<Task<()>>,
     next_id: u64,
 }
 
@@ -108,23 +118,19 @@ impl StudioApp {
                 .placeholder("Describe the website you want to build\u{2026}")
         });
         let api_key = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-\u{2026}"));
+        let login_email = cx.new(|cx| InputState::new(window, cx).default_value("rana@studio.sa").placeholder("you@email.com"));
+        let login_pw = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Password"));
+        let acp_url = cx.new(|cx| InputState::new(window, cx).placeholder("wss://localhost:4000  \u{b7}  or:  npx my-agent --acp"));
+        let mcp_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
+        let mcp_cmd = cx.new(|cx| InputState::new(window, cx).placeholder("Command or URL"));
 
-        cx.subscribe_in(&prompt, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::Change => {
-                if !this.dock_hint.is_empty() {
-                    this.dock_hint = SharedString::default();
-                    cx.notify();
+        cx.subscribe_in(&prompt, window, |this, _, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { secondary: false } = event {
+                if this.screen == Screen::DsWorkspace {
+                    this.ds_send(window, cx);
+                } else {
+                    this.send_prompt(window, cx);
                 }
-            }
-            InputEvent::PressEnter { secondary: false } => this.submit_prompt(window, cx),
-            _ => {}
-        })
-        .detach();
-
-        cx.subscribe(&api_key, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) && this.tested != Tested::Idle {
-                this.tested = Tested::Idle;
-                cx.notify();
             }
         })
         .detach();
@@ -165,45 +171,77 @@ impl StudioApp {
         }
 
         Self {
-            screen: Screen::Onboarding,
+            screen: Screen::Login,
             ob_step: 0,
-            show_advanced: false,
             provider: ProviderId::Anthropic,
-            model: provider(ProviderId::Anthropic).default_model().into(),
             api_key,
-            tested: Tested::Idle,
             dir: Dir::Rtl,
             device: Device::Desktop,
             generated: false,
             status: Status::Idle,
-            sub_label: SharedString::default(),
             busy: false,
             prompt,
-            sel: Vec::new(),
             messages: Vec::new(),
-            attachments: Vec::new(),
-            active_skills: Vec::new(),
-            show_skills: false,
             review_open: false,
-            chips: Vec::new(),
-            applied_edits: AppliedEdits::default(),
-            show_settings: false,
-            show_activity: false,
-            show_history: false,
-            toast: false,
-            error_action: None,
-            dock_hint: SharedString::default(),
-            dock_shake: false,
             pruning: true,
             caching: true,
             heal_attempts: 3,
-            history: Vec::new(),
-            activity: Vec::new(),
-            clock: 634,
+            login_email,
+            login_pw,
+            login_busy: false,
+            home_filter: HomeFilter::All,
+            projects: seed_projects(),
+            current_project: None,
+            new_type: ProjectKind::Website,
+            modal: None,
+            conn_mode: ConnMode::Key,
+            acp_url,
+            acp_connected: false,
+            chat_open: true,
+            panel_open: true,
+            chat_menu: None,
+            ds_picker_open: false,
+            api_panel_open: false,
+            chat_model: "sonnet".into(),
+            effort: Effort::Balanced,
+            permission: Permission::Review,
+            skills: vec![0],
+            api_spec: None,
+            spa_mode: true,
+            applied_ds: Some("ds1".into()),
+            pending_ds: None,
+            selection: Vec::new(),
+            edits: HashMap::new(),
+            added_blocks: Vec::new(),
+            event_order: [0, 1, 2],
+            keeps: [true; 5],
+            review_split: 50.0,
+            outline_collapsed: Vec::new(),
+            compile_step: 0,
+            ds_tab: DsTab::Foundations,
+            ds_sel: None,
+            ds_rtl: false,
+            ds_colors: ds_color_tokens(),
+            ds_types: ds_type_tokens(),
+            ds_demo: DsDemo::default(),
+            publish_tab: PublishTab::Deploy,
+            deploying: false,
+            published: false,
+            export_kind: ExportKind::Static,
+            settings_tab: SettingsTab::Providers,
+            share_role: ShareRole::Edit,
+            link_access: LinkAccess::Restricted,
+            collab_mk: ShareRole::Edit,
+            collab_ah: ShareRole::View,
+            share_menu: None,
+            mcp_list: seed_mcp(),
+            mcp_name,
+            mcp_cmd,
+            mcp_next_id: 4,
+            toast_note: None,
+            toast_task: None,
             preview,
-            settings_window: None,
             pipeline_task: None,
-            hint_task: None,
             next_id: 0,
         }
     }
@@ -231,693 +269,924 @@ impl StudioApp {
         let k = k.trim();
         k.len() >= 10 && !k.chars().any(char::is_whitespace)
     }
-    pub fn skill_suffix(&self) -> String {
-        let names: Vec<&str> = self.active_skills.iter().map(|id| skill(*id).name).collect();
-        if names.is_empty() {
-            return String::new();
-        }
-        let plural = if names.len() > 1 { "s" } else { "" };
-        format!(" I also applied your {} skill{plural}.", names.join(" and "))
-    }
-
     // ── chat / activity / history ───────────────────────────────────────────
-    fn push_msg(&mut self, role: Role, text: impl Into<SharedString>, tone: Tone, attachments: Vec<SharedString>) {
-        self.messages.push(Message { role, tone, text: text.into(), attachments });
-    }
-    fn send_user(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let atts: Vec<SharedString> = self.attachments.iter().map(|a| a.name.clone()).collect();
-        self.push_msg(Role::User, text, Tone::Plain, atts);
-        self.attachments.clear();
-        self.set_prompt("", window, cx);
-    }
-    fn push_activity(&mut self, tone: Tone, text: impl Into<SharedString>) {
-        self.activity.insert(0, ActivityItem { tone, text: text.into() });
-        self.activity.truncate(14);
-    }
-    fn push_checkpoint(&mut self, title: impl Into<SharedString>, edits: AppliedEdits) {
-        self.clock += 3;
-        for h in &mut self.history {
-            h.current = false;
-        }
-        let time = fmt_clock(self.clock);
-        self.history.insert(0, Checkpoint { title: title.into(), time: time.into(), edits, current: true });
+    fn push_msg(&mut self, role: Role, text: impl Into<SharedString>) {
+        self.messages.push(Message { role, text: text.into() });
     }
 
-    // ── the status pipeline (mock `pipeline`) ───────────────────────────────
-    fn run_pipeline(
-        &mut self,
-        steps: Vec<Step>,
-        done: impl FnOnce(&mut StudioApp, &mut Context<StudioApp>) + 'static,
-        cx: &mut Context<Self>,
-    ) {
-        self.pipeline_task = Some(cx.spawn(async move |this, cx| {
-            for step in steps {
-                let advanced = this
-                    .update(cx, |app, cx| {
-                        app.status = step.status;
-                        app.sub_label = step.label;
-                        app.busy = true;
-                        if let Some((tone, text)) = step.activity {
-                            app.push_activity(tone, text);
-                        }
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !advanced {
-                    return;
-                }
-                cx.background_executor().timer(Duration::from_millis(step.dur_ms)).await;
+    /// Push the current canvas state into the (persistent) preview page via
+    /// `window.__wfApply(...)` — dir, device, selection, live edits, the review
+    /// wipe, and any added blocks. No page reload, so inspector tweaks are live.
+    pub fn sync_preview(&self, cx: &mut Context<Self>) {
+        let Some(preview) = &self.preview else { return };
+        let mut edits = serde_json::Map::new();
+        for (k, e) in &self.edits {
+            let mut o = serde_json::Map::new();
+            if let Some(c) = &e.color {
+                o.insert("color".into(), serde_json::json!(c.as_ref()));
             }
-            let _ = this.update(cx, |app, cx| {
-                app.busy = false;
-                done(app, cx);
-                cx.notify();
-            });
-        }));
-    }
-
-    // ── prompt submission & generation flows ────────────────────────────────
-    pub fn submit_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
-        let raw = self.prompt_text(cx);
-        let txt = raw.trim().to_string();
-
-        if !self.generated {
-            if txt.is_empty() {
-                self.flash_hint("Describe your website first \u{2014} e.g. \u{201c}a caf\u{e9} in Cairo\u{201d}", cx);
-                return;
+            if let Some(s) = e.size {
+                o.insert("size".into(), serde_json::json!(s));
             }
-            self.send_user(raw, window, cx);
-            if is_error_prompt(&txt) {
-                self.run_error(ErrorAction::Generate, cx);
-            } else {
-                self.run_generate(cx);
+            if let Some(w) = e.weight {
+                o.insert("weight".into(), serde_json::json!(w));
             }
-            return;
-        }
-
-        if self.review_open {
-            if txt.is_empty() {
-                self.flash_hint("Tell me what to adjust in these changes", cx);
-                return;
+            if let Some(a) = e.align {
+                o.insert("align".into(), serde_json::json!(a.value()));
             }
-            self.send_user(raw, window, cx);
-            self.run_inline(cx);
-            return;
+            if let Some(b) = &e.bg {
+                o.insert("bg".into(), serde_json::json!(b.as_ref()));
+            }
+            if let Some(r) = e.radius {
+                o.insert("radius".into(), serde_json::json!(r));
+            }
+            edits.insert(k.to_string(), serde_json::Value::Object(o));
         }
-
-        if txt.is_empty() {
-            self.flash_hint("Type the change you want to make", cx);
-            return;
-        }
-        self.send_user(raw, window, cx);
-        if is_error_prompt(&txt) {
-            self.run_error(ErrorAction::Edit, cx);
-        } else if is_form_prompt(&txt) {
-            self.run_attention(cx);
-        } else {
-            self.run_edit(cx);
-        }
-    }
-
-    fn flash_hint(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.dock_hint = msg.into();
-        self.dock_shake = true;
-        self.hint_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(450)).await;
-            let _ = this.update(cx, |a, cx| {
-                a.dock_shake = false;
-                cx.notify();
-            });
-            cx.background_executor().timer(Duration::from_millis(2350)).await;
-            let _ = this.update(cx, |a, cx| {
-                a.dock_hint = SharedString::default();
-                cx.notify();
-            });
-        }));
-        cx.notify();
-    }
-
-    pub fn send_or_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            self.cancel(cx);
-        } else {
-            self.submit_prompt(window, cx);
-        }
-    }
-
-    pub fn cancel(&mut self, cx: &mut Context<Self>) {
-        self.pipeline_task = None;
-        self.busy = false;
-        self.status = if self.generated { Status::Compiled } else { Status::Idle };
-        self.sub_label = SharedString::default();
-        self.push_activity(Tone::Info, "Cancelled \u{2014} nothing was changed");
-        cx.notify();
-    }
-
-    fn run_generate(&mut self, cx: &mut Context<Self>) {
-        self.clear_selection(cx);
-        self.show_settings = false;
-        self.show_activity = false;
-        self.activity.clear();
-        let steps = vec![
-            Step::new(Status::Generating, "Understanding your prompt\u{2026}", 1100),
-            Step::new(Status::Compiling, "Composing five sections\u{2026}", 1200)
-                .log(Tone::Info, "Composed header, hero, menu, about and footer"),
-            Step::new(Status::SelfHeal, "Auto-fixing a broken menu link\u{2026}", 1150)
-                .log(Tone::Warn, "Auto-fix: a menu link pointed nowhere \u{2014} repaired"),
-        ];
-        self.run_pipeline(
-            steps,
-            |app, cx| {
-                app.generated = true;
-                app.applied_edits = AppliedEdits::default();
-                app.status = Status::Compiled;
-                app.push_activity(Tone::Ok, "Compiled successfully \u{b7} 1.9s");
-                app.push_checkpoint("Created Yasmine Caf\u{e9}", AppliedEdits::default());
-                let msg = format!(
-                    "Done \u{2014} your site is live with five sections: header, hero, menu, about and footer. I caught and repaired a broken link while compiling. Click any part of the preview to tweak it.{}",
-                    app.skill_suffix()
-                );
-                app.push_msg(Role::Assistant, msg, Tone::Plain, vec![]);
-                app.reload_preview(cx);
-            },
-            cx,
-        );
-    }
-
-    fn run_edit(&mut self, cx: &mut Context<Self>) {
-        let steps = vec![
-            Step::new(Status::Generating, "Reading the selected section\u{2026}", 900),
-            Step::new(Status::Compiling, "Preparing your changes\u{2026}", 1000),
-        ];
-        self.run_pipeline(
-            steps,
-            |app, _cx| {
-                app.review_open = true;
-                app.show_history = false;
-                app.status = Status::Compiled;
-                app.chips = vec![
-                    app.chip(EditKey::Bigger, ChipKind::Style, "Heading size increased"),
-                    app.chip(EditKey::Warm, ChipKind::Style, "Heading colour \u{2192} warm terracotta"),
-                    app.chip(EditKey::Tint, ChipKind::Style, "Soft warm background added to the hero"),
-                    app.chip(EditKey::Reserve, ChipKind::Text, "Button label \u{2192} \u{201c}Reserve a table\u{201d}"),
-                ];
-                let msg = format!(
-                    "I\u{2019}ve proposed 4 changes to the hero. Keep the ones you like on the right, then apply.{}",
-                    app.skill_suffix()
-                );
-                app.push_msg(Role::Assistant, msg, Tone::Plain, vec![]);
-            },
-            cx,
-        );
-    }
-
-    fn run_inline(&mut self, cx: &mut Context<Self>) {
-        let steps = vec![Step::new(Status::Compiling, "Folding in your tweak\u{2026}", 900)];
-        self.run_pipeline(
-            steps,
-            |app, _cx| {
-                app.status = Status::Compiled;
-                let chip = app.chip(EditKey::Sub, ChipKind::Text, "Sub-headline reworded to be more inviting");
-                app.chips.push(chip);
-                app.push_activity(Tone::Info, "Added a change to the pending proposal");
-                app.push_msg(Role::Assistant, "Added that tweak \u{2014} it\u{2019}s in the proposal on the right.", Tone::Plain, vec![]);
-            },
-            cx,
-        );
-    }
-
-    fn run_error(&mut self, action: ErrorAction, cx: &mut Context<Self>) {
-        self.clear_selection(cx);
-        self.show_settings = false;
-        self.show_activity = false;
-        self.dock_hint = SharedString::default();
-        let name = self.provider().name;
-        let steps = vec![
-            Step::new(Status::Generating, format!("Contacting {name}\u{2026}"), 1000),
-            Step::new(Status::Compiling, "Waiting for a response\u{2026}", 1300).log(Tone::Info, format!("Sent request to {name}")),
-        ];
-        self.run_pipeline(
-            steps,
-            move |app, _cx| {
-                app.status = Status::Error;
-                app.error_action = Some(action);
-                app.push_activity(Tone::Err, format!("Request to {name} timed out \u{2014} no response received"));
-                app.push_msg(
-                    Role::Assistant,
-                    format!("I couldn\u{2019}t reach {name} \u{2014} the request timed out. Check your connection or API key, then try again. Your project is safe."),
-                    Tone::Err,
-                    vec![],
-                );
-            },
-            cx,
-        );
-    }
-
-    pub fn retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let action = self.error_action;
-        self.status = if self.generated { Status::Compiled } else { Status::Idle };
-        self.error_action = None;
-        self.set_prompt("", window, cx);
-        if action == Some(ErrorAction::Edit) {
-            self.run_edit(cx);
-        } else {
-            self.run_generate(cx);
-        }
-    }
-
-    fn run_attention(&mut self, cx: &mut Context<Self>) {
-        self.clear_selection(cx);
-        let n = self.heal_attempts;
-        let mut steps = vec![
-            Step::new(Status::Generating, "Adding an online order form\u{2026}", 950),
-            Step::new(Status::Compiling, "Wiring up the form\u{2026}", 1000).log(Tone::Info, "Attempted to add an order form"),
-        ];
-        for i in 1..=n {
-            steps.push(
-                Step::new(Status::SelfHeal, format!("Attempt {i} of {n} \u{2014} retrying\u{2026}"), 800)
-                    .log(Tone::Warn, format!("Auto-fix attempt {i} failed: missing payment provider")),
-            );
-        }
-        self.run_pipeline(
-            steps,
-            move |app, _cx| {
-                app.status = Status::Attention;
-                app.toast = true;
-                app.push_activity(Tone::Warn, "Needs your attention: order form couldn\u{2019}t be wired automatically");
-                app.push_msg(
-                    Role::Assistant,
-                    format!("I tried {n} times but couldn\u{2019}t wire up the order form on my own \u{2014} it needs a payment provider from you. I left your design exactly as it was."),
-                    Tone::Warn,
-                    vec![],
-                );
-            },
-            cx,
-        );
-    }
-
-    fn chip(&mut self, key: EditKey, kind: ChipKind, label: impl Into<SharedString>) -> Chip {
-        Chip { id: self.next_id(), key, kind, label: label.into(), accepted: true }
-    }
-
-    /// Reload the preview webview so it reflects the current applied edits.
-    fn reload_preview(&mut self, cx: &mut Context<Self>) {
-        if let Some(preview) = &self.preview {
-            let url = format!("{ORIGIN}/{}?{}", site::PREVIEW_ENTRY, self.applied_edits.query());
-            preview.update(cx, |w, _| w.load_url(&url));
-        }
+        let blocks: Vec<&str> = self
+            .added_blocks
+            .iter()
+            .map(|b| match b {
+                BlockType::Text => "text",
+                BlockType::Image => "image",
+                BlockType::Button => "button",
+            })
+            .collect();
+        let state = serde_json::json!({
+            "dir": if self.dir == Dir::Rtl { "rtl" } else { "ltr" },
+            "device": match self.device { Device::Desktop => "desktop", Device::Tablet => "tablet", Device::Mobile => "mobile" },
+            "review": self.review_open,
+            "reviewSplit": self.review_split,
+            "selection": self.selection.iter().map(|s| s.as_ref()).collect::<Vec<&str>>(),
+            "addedBlocks": blocks,
+            "eventOrder": self.event_order,
+            "edits": serde_json::Value::Object(edits),
+        });
+        let js = format!("window.__wfApply && window.__wfApply({state});");
+        preview.update(cx, |w, _| {
+            let _ = w.raw().evaluate_script(&js);
+        });
     }
 
     // ── onboarding ──────────────────────────────────────────────────────────
     pub fn pick_provider(&mut self, id: ProviderId, cx: &mut Context<Self>) {
         self.provider = id;
-        self.model = provider(id).default_model().into();
         cx.notify();
     }
-    pub fn test_conn(&mut self, cx: &mut Context<Self>) {
-        self.tested = if self.key_valid(cx) { Tested::Ok } else { Tested::Fail };
+
+    // ── shell: auth, home, projects, modals (cinematic redesign) ─────────────
+    pub fn login_ready(&self, cx: &Context<Self>) -> bool {
+        self.login_email.read(cx).value().trim().len() > 3 && !self.login_pw.read(cx).value().is_empty()
+    }
+    pub fn sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.login_busy {
+            return;
+        }
+        self.login_busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1100)).await;
+            let _ = this.update(cx, |a, cx| {
+                a.login_busy = false;
+                a.screen = Screen::Home;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    pub fn sso_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.screen = Screen::Home;
         cx.notify();
     }
-    pub fn ob_next(&mut self, cx: &mut Context<Self>) {
-        if self.ob_step == 1 && !self.key_valid(cx) {
-            self.tested = Tested::Fail;
-        } else {
-            self.ob_step = (self.ob_step + 1).min(2);
+    pub fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.screen = Screen::Login;
+        self.modal = None;
+        self.current_project = None;
+        self.login_pw.update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+    pub fn set_home_filter(&mut self, f: HomeFilter, cx: &mut Context<Self>) {
+        self.home_filter = f;
+        cx.notify();
+    }
+    pub fn current_project(&self) -> Option<&Project> {
+        let id = self.current_project.as_ref()?;
+        self.projects.iter().find(|p| &p.id == id)
+    }
+    pub fn open_project(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let Some(p) = self.projects.iter().find(|p| p.id == id).cloned() else { return };
+        self.current_project = Some(p.id.clone());
+        self.modal = None;
+        match p.kind {
+            ProjectKind::System => {
+                self.screen = Screen::DsWorkspace;
+                self.messages.clear();
+                self.push_msg(
+                    Role::Assistant,
+                    "This is your design system. Tell me to add a token, restyle a component, or generate a new one \u{2014} I\u{2019}ll apply it across the kit.",
+                );
+            }
+            ProjectKind::Website => {
+                let built = p.id.as_ref() == "p1";
+                self.screen = Screen::Workspace;
+                self.generated = built;
+                self.review_open = false;
+                self.messages.clear();
+                if built {
+                    self.status = Status::Compiled;
+                    self.push_msg(
+                        Role::Assistant,
+                        "Welcome back \u{2014} your site is live. Ask for a change, or click any element to tweak it.",
+                    );
+                } else {
+                    self.status = Status::Idle;
+                }
+                self.sync_preview(cx);
+            }
         }
         cx.notify();
     }
-    pub fn ob_back(&mut self, cx: &mut Context<Self>) {
+    pub fn new_project(&mut self, cx: &mut Context<Self>) {
+        self.open_modal(Modal::NewProject, cx);
+    }
+    pub fn set_new_type(&mut self, kind: ProjectKind, cx: &mut Context<Self>) {
+        self.new_type = kind;
+        cx.notify();
+    }
+    pub fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.modal = None;
+        match self.new_type {
+            ProjectKind::System => {
+                self.screen = Screen::DsWorkspace;
+                self.current_project = Some("new".into());
+                self.messages.clear();
+                self.push_msg(
+                    Role::Assistant,
+                    "Let\u{2019}s build your design system. Describe your brand \u{2014} colors, type, feel \u{2014} and I\u{2019}ll generate a starter kit of tokens and components.",
+                );
+            }
+            ProjectKind::Website => {
+                self.ob_step = 0;
+                self.generated = false;
+                self.review_open = false;
+                self.messages.clear();
+                self.set_prompt("", window, cx);
+                self.screen = Screen::Onboarding;
+            }
+        }
+        cx.notify();
+    }
+    pub fn request_exit(&mut self, cx: &mut Context<Self>) {
+        self.open_modal(Modal::Exit, cx);
+    }
+    pub fn confirm_exit(&mut self, cx: &mut Context<Self>) {
+        self.screen = Screen::Home;
+        self.modal = None;
+        self.current_project = None;
+        cx.notify();
+    }
+    pub fn open_modal(&mut self, m: Modal, cx: &mut Context<Self>) {
+        self.modal = Some(m);
+        cx.notify();
+    }
+    pub fn close_modal(&mut self, cx: &mut Context<Self>) {
+        self.modal = None;
+        self.share_menu = None;
+        cx.notify();
+    }
+    pub fn open_profile(&mut self, cx: &mut Context<Self>) {
+        self.open_modal(Modal::Profile, cx);
+    }
+
+    // ── onboarding (cinematic) ───────────────────────────────────────────────
+    pub fn set_conn_mode(&mut self, m: ConnMode, cx: &mut Context<Self>) {
+        self.conn_mode = m;
+        cx.notify();
+    }
+    pub fn goto_step(&mut self, i: u8, cx: &mut Context<Self>) {
+        if i <= self.ob_step {
+            self.ob_step = i;
+            cx.notify();
+        }
+    }
+    pub fn next_step(&mut self, cx: &mut Context<Self>) {
+        self.ob_step = (self.ob_step + 1).min(2);
+        cx.notify();
+    }
+    pub fn prev_step(&mut self, cx: &mut Context<Self>) {
         self.ob_step = self.ob_step.saturating_sub(1);
         cx.notify();
     }
-    pub fn start_blank(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Studio;
-        self.set_prompt("", window, cx);
-        cx.notify();
-    }
-    pub fn pick_sample(&mut self, prompt: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Studio;
+    pub fn enter_workspace(&mut self, prompt: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.screen = Screen::Workspace;
+        self.generated = false;
+        self.status = Status::Idle;
+        self.review_open = false;
+        self.messages.clear();
         self.set_prompt(prompt, window, cx);
         cx.notify();
     }
-    pub fn start_with(&mut self, prompt: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.send_user(prompt.to_string(), window, cx);
-        self.run_generate(cx);
+    pub fn skip_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.enter_workspace("", window, cx);
+    }
+    pub fn pick_starter(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let preset = match id {
+            "venue" => "A rooftop live-music venue in Riyadh \u{2014} Arabic-first, dark and cinematic, with a lineup and table booking.",
+            "cafe" => "A cozy caf\u{e9} landing page with a menu, hours and a location map.",
+            "portfolio" => "A photographer\u{2019}s portfolio with a hero, gallery grid and contact.",
+            "product" => "A launch page for a new product with a hero, features and pricing.",
+            _ => "",
+        };
+        self.enter_workspace(preset, window, cx);
     }
 
     // ── toolbar ─────────────────────────────────────────────────────────────
     pub fn set_dir(&mut self, dir: Dir, cx: &mut Context<Self>) {
         self.dir = dir;
-        self.clear_selection(cx);
+        self.sync_preview(cx);
         cx.notify();
     }
     pub fn set_device(&mut self, device: Device, cx: &mut Context<Self>) {
         self.device = device;
-        self.clear_selection(cx);
+        self.sync_preview(cx);
         cx.notify();
-    }
-    fn current_index(&self) -> Option<usize> {
-        self.history.iter().position(|h| h.current)
     }
     pub fn can_undo(&self) -> bool {
-        matches!(self.current_index(), Some(i) if i + 1 < self.history.len())
+        false
     }
     pub fn can_redo(&self) -> bool {
-        matches!(self.current_index(), Some(i) if i > 0)
+        false
     }
-    pub fn undo(&mut self, cx: &mut Context<Self>) {
-        if let Some(i) = self.current_index()
-            && i + 1 < self.history.len()
-        {
-            self.restore(i + 1, cx);
-        }
-    }
-    pub fn redo(&mut self, cx: &mut Context<Self>) {
-        if let Some(i) = self.current_index()
-            && i > 0
-        {
-            self.restore(i - 1, cx);
-        }
-    }
-    pub fn restore(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let Some(cp) = self.history.get(idx).cloned() else { return };
-        self.applied_edits = cp.edits;
-        self.clear_selection(cx);
-        self.review_open = false;
-        for (i, h) in self.history.iter_mut().enumerate() {
-            h.current = i == idx;
-        }
-        self.push_activity(Tone::Info, format!("Restored: {}", cp.title));
-        self.reload_preview(cx);
-        cx.notify();
-    }
+    pub fn undo(&mut self, _cx: &mut Context<Self>) {}
+    pub fn redo(&mut self, _cx: &mut Context<Self>) {}
 
     // ── IPC bridge ───────────────────────────────────────────────────────────
     fn apply_ipc(&mut self, events: Vec<ipc::Event>, cx: &mut Context<Self>) {
         for event in events {
             match event {
-                ipc::Event::Select(Some(key)) => self.select_section(key, cx),
-                ipc::Event::Select(None) => self.clear_sel(cx),
+                ipc::Event::Select { key, additive } => self.select_el(key, additive, cx),
+                ipc::Event::Deselect => {
+                    if self.generated && !self.busy && !self.selection.is_empty() {
+                        self.deselect(cx);
+                    }
+                }
+                ipc::Event::PageLoaded => self.sync_preview(cx),
             }
         }
     }
 
-    // ── canvas selection & quick inspector ──────────────────────────────────
-    /// Toggle one section's membership in the (possibly multi-item) selection.
-    pub fn select_section(&mut self, key: &'static str, cx: &mut Context<Self>) {
-        if !(self.generated && !self.review_open && !self.busy) {
-            return;
-        }
-        if let Some(pos) = self.sel.iter().position(|s| s.key == key) {
-            self.sel.remove(pos);
-        } else {
-            self.sel.push(Selection { key });
-        }
-        self.sync_preview_selection(cx);
-        cx.notify();
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Cinematic workspace: build flow, review, selection, inspector, blocks
+    // ════════════════════════════════════════════════════════════════════════
+    pub fn compile_text(&self) -> &'static str {
+        const STEPS: [&str; 5] = [
+            "Understanding your request\u{2026}",
+            "Generating five sections\u{2026}",
+            "Compiling HTML\u{2026}",
+            "Self-healing \u{2014} repairing a broken link\u{2026}",
+            "Finishing up\u{2026}",
+        ];
+        STEPS[(self.compile_step as usize).min(4)]
     }
-    /// Drop one section from the selection (e.g. its chip's "×" in the chat
-    /// dock) and clear its highlight in the preview to match.
-    pub fn remove_selection(&mut self, key: &'static str, cx: &mut Context<Self>) {
-        self.sel.retain(|s| s.key != key);
-        self.sync_preview_selection(cx);
-        cx.notify();
+    pub fn compile_sub(&self) -> &'static str {
+        const SUB: [&str; 5] = ["reading prompt", "header \u{b7} hero \u{b7} lineup \u{b7} about \u{b7} footer", "layali.webfluent.app", "retry 1 of 3 \u{b7} fixed", "done"];
+        SUB[(self.compile_step as usize).min(4)]
     }
-    pub fn clear_sel(&mut self, cx: &mut Context<Self>) {
-        self.clear_selection(cx);
-        cx.notify();
+    pub fn chat_model_label(&self) -> String {
+        model_def(&self.chat_model).name.replace("Claude ", "")
     }
-    /// Clear every selection and keep the preview's highlights in sync.
-    fn clear_selection(&mut self, cx: &mut Context<Self>) {
-        self.sel.clear();
-        self.sync_preview_selection(cx);
-    }
-    /// Re-paint the preview's inline selection outlines to match `self.sel`
-    /// exactly, so the two never drift apart regardless of which side (a
-    /// preview click, or a chip removed in chat) changed the selection.
-    fn sync_preview_selection(&mut self, cx: &mut Context<Self>) {
-        let Some(preview) = &self.preview else { return };
-        let keys: Vec<&str> = self.sel.iter().map(|s| s.key).collect();
-        let keys_json = serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into());
-        let js = format!(
-            "(function(keys){{document.querySelectorAll('[data-wf-el]').forEach(function(el){{\
-             if(keys.indexOf(el.getAttribute('data-wf-el'))!==-1){{el.style.outline='2px solid #e2725b';el.style.outlineOffset='-2px';}}\
-             else{{el.style.outline='';el.style.outlineOffset='';}}}});}})({keys_json});"
-        );
-        preview.update(cx, |w, _| {
-            let _ = w.raw().evaluate_script(&js);
-        });
-    }
-    pub fn pick_try(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn right_mode(&self) -> RightMode {
         if self.busy {
-            return;
-        }
-        self.send_user(text.to_string(), window, cx);
-        if is_form_prompt(text) {
-            self.run_attention(cx);
+            RightMode::Working
+        } else if self.review_open && self.selection.is_empty() {
+            RightMode::Review
+        } else if self.selection.len() > 1 {
+            RightMode::Multi
+        } else if self.selection.len() == 1 && self.generated {
+            RightMode::Inspector
+        } else if self.generated {
+            RightMode::Outline
         } else {
-            self.run_edit(cx);
+            RightMode::Start
         }
-    }
-    fn apply_quick(&mut self, key: EditKey, on: bool, title: &'static str, cx: &mut Context<Self>) {
-        self.applied_edits.set(key, on);
-        self.push_activity(Tone::Ok, format!("Quick edit \u{b7} {title}"));
-        self.push_checkpoint(title, self.applied_edits);
-        self.reload_preview(cx);
-        cx.notify();
-    }
-    pub fn insp_warm(&mut self, cx: &mut Context<Self>) {
-        self.apply_quick(EditKey::Warm, true, "Heading colour \u{2192} terracotta", cx);
-    }
-    pub fn insp_dark(&mut self, cx: &mut Context<Self>) {
-        self.apply_quick(EditKey::Warm, false, "Heading colour \u{2192} dark", cx);
-    }
-    pub fn insp_bigger(&mut self, cx: &mut Context<Self>) {
-        self.apply_quick(EditKey::Bigger, true, "Heading size increased", cx);
-    }
-    pub fn insp_smaller(&mut self, cx: &mut Context<Self>) {
-        self.apply_quick(EditKey::Bigger, false, "Heading size reduced", cx);
     }
 
-    // ── review ──────────────────────────────────────────────────────────────
-    pub fn toggle_chip(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(c) = self.chips.iter_mut().find(|c| c.id == id) {
-            c.accepted = !c.accepted;
+    pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.prompt_text(cx);
+        self.build(text, window, cx);
+    }
+    pub fn run_suggestion(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.build(text.to_string(), window, cx);
+    }
+    /// Design-system assistant: send the composer text (or a suggestion).
+    pub fn ds_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let t = self.prompt_text(cx).trim().to_string();
+        if t.is_empty() {
+            return;
+        }
+        self.push_msg(Role::User, t);
+        self.set_prompt("", window, cx);
+        self.push_msg(
+            Role::Assistant,
+            "Updated your design system \u{2014} I adjusted the tokens and regenerated the affected components. Review them on the canvas.",
+        );
+        self.show_toast(ToastTone::Success, "Design system updated \u{b7} saved to version history.", cx);
+    }
+    pub fn ds_run(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.push_msg(Role::User, text.to_string());
+        self.push_msg(Role::Assistant, "Done \u{2014} applied across your tokens and components. Take a look.");
+        self.show_toast(ToastTone::Success, "Design system updated.", cx);
+    }
+
+    // ── design-system: tabs, selection, foundations & specimen edits ─────────
+    pub fn set_ds_tab(&mut self, tab: DsTab, cx: &mut Context<Self>) {
+        self.ds_tab = tab;
+        self.ds_sel = None;
+        cx.notify();
+    }
+    pub fn ds_select(&mut self, kind: DsSelKind, id: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.ds_sel = Some(DsSel { kind, id: id.into() });
+        cx.notify();
+    }
+    pub fn ds_clear_sel(&mut self, cx: &mut Context<Self>) {
+        self.ds_sel = None;
+        cx.notify();
+    }
+    pub fn toggle_ds_rtl(&mut self, cx: &mut Context<Self>) {
+        self.ds_rtl = !self.ds_rtl;
+        cx.notify();
+    }
+    pub fn ds_add_color(&mut self, cx: &mut Context<Self>) {
+        let id = SharedString::from(format!("c-new{}", self.next_id()));
+        self.ds_colors.push(DsColorToken {
+            id: id.clone(),
+            name: "New token".into(),
+            val: 0x7FB3B0,
+            role: "Untitled role".into(),
+            group: "Custom".into(),
+        });
+        self.ds_sel = Some(DsSel { kind: DsSelKind::Color, id });
+        self.show_toast(ToastTone::Success, "Added a color token \u{2014} pick its value on the right.", cx);
+        cx.notify();
+    }
+    /// Repaint the selected color token from a swatch pick.
+    pub fn set_ds_color_val(&mut self, id: &str, val: u32, cx: &mut Context<Self>) {
+        if let Some(c) = self.ds_colors.iter_mut().find(|c| c.id.as_ref() == id) {
+            c.val = val;
             cx.notify();
         }
     }
-    pub fn keep_all(&mut self, cx: &mut Context<Self>) {
-        for c in &mut self.chips {
-            c.accepted = true;
+    pub fn set_ds_type_weight(&mut self, id: &str, w: u16, cx: &mut Context<Self>) {
+        if let Some(t) = self.ds_types.iter_mut().find(|t| t.id.as_ref() == id) {
+            t.weight = w;
+            cx.notify();
         }
+    }
+    pub fn bump_ds_type_size(&mut self, id: &str, delta: f32, cx: &mut Context<Self>) {
+        if let Some(t) = self.ds_types.iter_mut().find(|t| t.id.as_ref() == id) {
+            t.size = (t.size + delta).clamp(10.0, 72.0);
+            cx.notify();
+        }
+    }
+    pub fn bump_ds_type_tracking(&mut self, id: &str, delta: f32, cx: &mut Context<Self>) {
+        if let Some(t) = self.ds_types.iter_mut().find(|t| t.id.as_ref() == id) {
+            t.tracking = (t.tracking + delta).clamp(-4.0, 12.0);
+            cx.notify();
+        }
+    }
+    pub fn set_ds_btn_variant(&mut self, v: DsBtnVariant, cx: &mut Context<Self>) {
+        self.ds_demo.button_variant = v;
         cx.notify();
     }
-    pub fn clear_all(&mut self, cx: &mut Context<Self>) {
-        for c in &mut self.chips {
-            c.accepted = false;
-        }
+    pub fn set_ds_btn_size(&mut self, s: DsBtnSize, cx: &mut Context<Self>) {
+        self.ds_demo.button_size = s;
         cx.notify();
     }
-    pub fn accepted_count(&self) -> usize {
-        self.chips.iter().filter(|c| c.accepted).count()
+    pub fn set_ds_chip_kind(&mut self, k: DsChipKind, cx: &mut Context<Self>) {
+        self.ds_demo.chip_kind = k;
+        cx.notify();
     }
-    pub fn apply_accepted(&mut self, cx: &mut Context<Self>) {
-        let accepted: Vec<EditKey> = self.chips.iter().filter(|c| c.accepted).map(|c| c.key).collect();
-        if accepted.is_empty() {
+    pub fn set_ds_status_tone(&mut self, t: DsStatusTone, cx: &mut Context<Self>) {
+        self.ds_demo.status_tone = t;
+        cx.notify();
+    }
+    pub fn set_ds_avatar_tone(&mut self, t: DsAvatarTone, cx: &mut Context<Self>) {
+        self.ds_demo.avatar_tone = t;
+        cx.notify();
+    }
+    pub fn toggle_ds_demo(&mut self, cx: &mut Context<Self>) {
+        self.ds_demo.toggle = !self.ds_demo.toggle;
+        cx.notify();
+    }
+    pub fn bump_ds_slider(&mut self, delta: i16, cx: &mut Context<Self>) {
+        self.ds_demo.slider = (self.ds_demo.slider as i16 + delta).clamp(0, 100) as u8;
+        cx.notify();
+    }
+    pub fn set_ds_tabs_active(&mut self, i: u8, cx: &mut Context<Self>) {
+        self.ds_demo.tabs_active = i;
+        cx.notify();
+    }
+    pub fn ds_generate_sel(&mut self, cx: &mut Context<Self>) {
+        let Some(sel) = self.ds_sel.clone() else { return };
+        let label = ds_comp(sel.id.as_ref()).map(|c| c.label).unwrap_or("component");
+        self.push_msg(Role::User, format!("Generate the {label} component."));
+        self.push_msg(
+            Role::Assistant,
+            format!("Generating {label} \u{2014} I\u{2019}ll add it as a live, editable specimen with its variants and states."),
+        );
+        self.show_toast(ToastTone::Success, format!("{label} queued for generation."), cx);
+        cx.notify();
+    }
+
+    // ── design-system: inspector selection accessors ────────────────────────
+    pub fn ds_summary(&self) -> (usize, usize, usize, usize) {
+        (self.ds_colors.len(), self.ds_types.len(), ds_comp_counts().1, DS_RADII.len())
+    }
+    pub fn ds_selected_color(&self) -> Option<&DsColorToken> {
+        let sel = self.ds_sel.as_ref()?;
+        (sel.kind == DsSelKind::Color).then(|| self.ds_colors.iter().find(|c| c.id == sel.id)).flatten()
+    }
+    pub fn ds_selected_type(&self) -> Option<&DsTypeToken> {
+        let sel = self.ds_sel.as_ref()?;
+        (sel.kind == DsSelKind::Type).then(|| self.ds_types.iter().find(|t| t.id == sel.id)).flatten()
+    }
+    pub fn ds_selected_comp(&self) -> Option<&'static DsComp> {
+        let sel = self.ds_sel.as_ref()?;
+        (sel.kind == DsSelKind::Comp).then(|| ds_comp(sel.id.as_ref())).flatten()
+    }
+
+    pub fn build(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let t = text.trim().to_string();
+        if t.is_empty() || self.busy {
             return;
         }
-        for key in &accepted {
-            self.applied_edits.set(*key, true);
-        }
-        let n = accepted.len();
-        self.review_open = false;
-        self.chips.clear();
-        self.clear_selection(cx);
-        self.status = Status::Compiled;
-        let plural = if n > 1 { "s" } else { "" };
-        self.push_activity(Tone::Ok, format!("Applied {n} change{plural} to the hero"));
-        self.push_checkpoint("Warmer, bolder hero", self.applied_edits);
-        self.push_msg(Role::Assistant, format!("Applied {n} change{plural} and saved a checkpoint to your history."), Tone::Plain, vec![]);
-        self.reload_preview(cx);
+        self.push_msg(Role::User, t);
+        self.set_prompt("", window, cx);
+        self.selection.clear();
+        self.chat_menu = None;
+        self.busy = true;
+        self.compile_step = 0;
+        self.status = Status::Compiling;
         cx.notify();
-    }
-    pub fn reset_proposal(&mut self, cx: &mut Context<Self>) {
-        self.review_open = false;
-        self.chips.clear();
-        self.status = Status::Compiled;
-        self.push_msg(Role::Assistant, "Discarded that proposal \u{2014} nothing changed.", Tone::Plain, vec![]);
-        cx.notify();
-    }
-
-    // ── menus & settings ────────────────────────────────────────────────────
-    pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.show_activity = false;
-        if self.show_settings {
-            self.show_settings = false;
-            if let Some(handle) = self.settings_window.take() {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
-            }
-        } else {
-            self.show_settings = true;
-            self.open_settings_window(cx);
-        }
-        cx.notify();
-    }
-    /// Open the Settings window, or focus it if it's already open. A real,
-    /// separate OS window rather than an absolutely-positioned popover,
-    /// since the embedded preview webview always paints above anything
-    /// GPUI draws on top of it in the *same* window — a popover over the
-    /// canvas could never actually appear above the preview.
-    fn open_settings_window(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = self.settings_window
-            && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
-        {
-            return;
-        }
-        // `cx.open_window` forces the new window to draw once, synchronously,
-        // before returning — which calls back into `StudioApp` (via
-        // `SettingsWindow::render`'s `app.update(...)`) while *this* update
-        // (the click listener that got us here) is still on the stack,
-        // panicking ("cannot update StudioApp while it is already being
-        // updated"). `cx.defer` runs after the current update cycle finishes
-        // and the entity is returned to the app, so by the time it runs,
-        // opening the window (and its forced first draw) is no longer
-        // reentrant.
-        let app = cx.entity();
-        cx.defer(move |cx| {
-            let opts = WindowOptions {
-                window_bounds: Some(WindowBounds::centered(size(px(420.0), px(600.0)), cx)),
-                titlebar: Some(TitlebarOptions { title: Some("Settings".into()), ..Default::default() }),
-                window_min_size: Some(size(px(380.0), px(420.0))),
-                ..Default::default()
-            };
-            let app_for_window = app.clone();
-            let opened = cx.open_window(opts, move |window, cx| {
-                let app_for_close = app_for_window.clone();
-                window.on_window_should_close(cx, move |_, cx| {
-                    app_for_close.update(cx, |app, cx| {
-                        app.show_settings = false;
-                        app.settings_window = None;
-                        cx.notify();
-                    });
-                    true
-                });
-                let settings = cx.new(|_| SettingsWindow { app: app_for_window });
-                cx.new(|cx| Root::new(settings, window, cx))
-            });
-            if let Ok(handle) = opened {
-                app.update(cx, |app, _| app.settings_window = Some(handle));
-            }
-        });
-    }
-    pub fn toggle_activity(&mut self, cx: &mut Context<Self>) {
-        self.show_activity = !self.show_activity;
-        self.show_settings = false;
-        cx.notify();
-    }
-    pub fn toggle_history(&mut self, cx: &mut Context<Self>) {
-        self.show_history = !self.show_history && !self.review_open;
-        cx.notify();
-    }
-    pub fn toggle_advanced(&mut self, cx: &mut Context<Self>) {
-        self.show_advanced = !self.show_advanced;
-        cx.notify();
-    }
-    pub fn set_pruning(&mut self, cx: &mut Context<Self>) {
-        self.pruning = !self.pruning;
-        cx.notify();
-    }
-    pub fn set_caching(&mut self, cx: &mut Context<Self>) {
-        self.caching = !self.caching;
-        cx.notify();
-    }
-    pub fn set_heal_attempts(&mut self, n: u8, cx: &mut Context<Self>) {
-        self.heal_attempts = n;
-        cx.notify();
-    }
-    pub fn set_model(&mut self, model: &str, cx: &mut Context<Self>) {
-        self.model = model.to_string().into();
-        cx.notify();
-    }
-    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
-        self.show_settings = true;
-        self.show_activity = false;
-        self.status = if self.generated { Status::Compiled } else { Status::Idle };
-        self.error_action = None;
-        self.open_settings_window(cx);
-        cx.notify();
-    }
-
-    // ── skills ──────────────────────────────────────────────────────────────
-    pub fn toggle_skills_menu(&mut self, cx: &mut Context<Self>) {
-        self.show_skills = !self.show_skills;
-        self.show_settings = false;
-        self.show_activity = false;
-        cx.notify();
-    }
-    pub fn close_skills(&mut self, cx: &mut Context<Self>) {
-        self.show_skills = false;
-        cx.notify();
-    }
-    pub fn toggle_skill(&mut self, id: SkillId, cx: &mut Context<Self>) {
-        if let Some(pos) = self.active_skills.iter().position(|s| *s == id) {
-            self.active_skills.remove(pos);
-        } else {
-            self.active_skills.push(id);
-        }
-        cx.notify();
-    }
-    pub fn remove_skill(&mut self, id: SkillId, cx: &mut Context<Self>) {
-        self.active_skills.retain(|s| *s != id);
-        cx.notify();
-    }
-
-    // ── attachments (native file picker) ────────────────────────────────────
-    pub fn trigger_file(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                let _ = this.update(cx, |app, cx| {
-                    for path in paths {
-                        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "attachment".into());
-                        let id = app.next_id();
-                        app.attachments.push(Attachment { id, name: name.into() });
-                    }
+        self.pipeline_task = Some(cx.spawn(async move |this, cx| {
+            for i in 0..5u8 {
+                if this.update(cx, |a, cx| {
+                    a.compile_step = i;
                     cx.notify();
-                });
+                }).is_err()
+                {
+                    return;
+                }
+                cx.background_executor().timer(Duration::from_millis(480)).await;
             }
+            let _ = this.update(cx, |a, cx| {
+                a.busy = false;
+                a.generated = true;
+                a.review_open = true;
+                a.status = Status::Compiled;
+                a.keeps = [true; 5];
+                a.review_split = 50.0;
+                a.push_msg(
+                    Role::Assistant,
+                    "Done \u{2014} your site is live with five sections: header, hero, lineup, about and footer. I caught and repaired a broken link while compiling. Click any part of the preview to tweak it.",
+                );
+                a.sync_preview(cx);
+                a.show_toast(ToastTone::Success, "Self-healing repaired 1 issue while compiling \u{2014} your design was untouched.", cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    // ── review ───────────────────────────────────────────────────────────────
+    pub fn kept_count(&self) -> usize {
+        self.keeps.iter().filter(|k| **k).count()
+    }
+    pub fn toggle_keep(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(k) = self.keeps.get_mut(i) {
+            *k = !*k;
+            cx.notify();
+        }
+    }
+    pub fn review_keep_all(&mut self, cx: &mut Context<Self>) {
+        self.keeps = [true; 5];
+        cx.notify();
+    }
+    pub fn review_clear_all(&mut self, cx: &mut Context<Self>) {
+        self.keeps = [false; 5];
+        cx.notify();
+    }
+    pub fn apply_review(&mut self, cx: &mut Context<Self>) {
+        self.review_open = false;
+        self.selection.clear();
+        self.status = Status::Compiled;
+        self.sync_preview(cx);
+        self.show_toast(ToastTone::Success, "Changes applied \u{b7} saved to version history.", cx);
+        cx.notify();
+    }
+    pub fn discard_review(&mut self, cx: &mut Context<Self>) {
+        self.review_open = false;
+        self.selection.clear();
+        self.status = Status::Compiled;
+        self.sync_preview(cx);
+        self.show_toast(ToastTone::Idle, "Changes discarded \u{2014} your design was left untouched.", cx);
+        cx.notify();
+    }
+
+    // ── selection ─────────────────────────────────────────────────────────────
+    pub fn select_el(&mut self, key: impl Into<SharedString>, additive: bool, cx: &mut Context<Self>) {
+        if !self.generated || self.busy {
+            return;
+        }
+        let key = key.into();
+        if additive {
+            if let Some(pos) = self.selection.iter().position(|k| *k == key) {
+                self.selection.remove(pos);
+            } else {
+                self.selection.push(key);
+            }
+        } else {
+            self.selection = vec![key];
+        }
+        if self.review_open {
+            self.review_open = false;
+        }
+        self.chat_menu = None;
+        self.sync_preview(cx);
+        cx.notify();
+    }
+    pub fn deselect(&mut self, cx: &mut Context<Self>) {
+        self.selection.clear();
+        self.sync_preview(cx);
+        cx.notify();
+    }
+    pub fn remove_from_selection(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.selection.retain(|k| k.as_ref() != key);
+        self.sync_preview(cx);
+        cx.notify();
+    }
+    pub fn sel_kind(&self) -> Option<ElKind> {
+        if self.selection.len() != 1 {
+            return None;
+        }
+        let key = self.selection[0].as_ref();
+        if let Some(idx) = key.strip_prefix("add").and_then(|n| n.parse::<usize>().ok()) {
+            return self.added_blocks.get(idx).map(|b| match b {
+                BlockType::Text => ElKind::Text,
+                BlockType::Image => ElKind::Image,
+                BlockType::Button => ElKind::Button,
+            });
+        }
+        element(key).map(|e| e.kind)
+    }
+    pub fn sel_label(&self, key: &str) -> SharedString {
+        if let Some(idx) = key.strip_prefix("add").and_then(|n| n.parse::<usize>().ok()) {
+            return self.added_blocks.get(idx).map(|b| b.label().into()).unwrap_or_else(|| "Block".into());
+        }
+        element(key).map(|e| SharedString::from(e.label)).unwrap_or_else(|| "Element".into())
+    }
+    pub fn sel_icon(&self, key: &str) -> &'static str {
+        if key.starts_with("add") {
+            return "plus";
+        }
+        element(key).map(|e| e.icon).unwrap_or("target")
+    }
+
+    // ── inspector (live edits) ────────────────────────────────────────────────
+    fn update_edit(&mut self, f: impl Fn(&mut ElEdit), cx: &mut Context<Self>) {
+        for key in self.selection.clone() {
+            f(self.edits.entry(key).or_default());
+        }
+        self.sync_preview(cx);
+        cx.notify();
+    }
+    pub fn set_color(&mut self, v: SharedString, cx: &mut Context<Self>) {
+        self.update_edit(move |e| e.color = Some(v.clone()), cx);
+    }
+    pub fn set_size(&mut self, v: f32, cx: &mut Context<Self>) {
+        self.update_edit(move |e| e.size = Some(v), cx);
+    }
+    pub fn set_weight(&mut self, v: u16, cx: &mut Context<Self>) {
+        self.update_edit(move |e| e.weight = Some(v), cx);
+    }
+    pub fn set_align(&mut self, v: Align, cx: &mut Context<Self>) {
+        self.update_edit(move |e| e.align = Some(v), cx);
+    }
+    pub fn set_bg(&mut self, v: SharedString, cx: &mut Context<Self>) {
+        self.update_edit(move |e| e.bg = Some(v.clone()), cx);
+    }
+    pub fn set_radius(&mut self, v: f32, cx: &mut Context<Self>) {
+        self.update_edit(move |e| e.radius = Some(v), cx);
+    }
+    pub fn reset_style(&mut self, cx: &mut Context<Self>) {
+        for key in self.selection.clone() {
+            self.edits.insert(key, ElEdit::default());
+        }
+        self.sync_preview(cx);
+        cx.notify();
+    }
+    pub fn edit_for(&self, key: &str) -> ElEdit {
+        self.edits.get(key).cloned().unwrap_or_default()
+    }
+
+    // ── outline / blocks ──────────────────────────────────────────────────────
+    pub fn toggle_outline_group(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(pos) = self.outline_collapsed.iter().position(|g| g.as_ref() == id) {
+            self.outline_collapsed.remove(pos);
+        } else {
+            self.outline_collapsed.push(id.to_string().into());
+        }
+        cx.notify();
+    }
+    pub fn outline_open(&self, id: &str) -> bool {
+        !self.outline_collapsed.iter().any(|g| g.as_ref() == id)
+    }
+    pub fn add_block(&mut self, kind: BlockType, cx: &mut Context<Self>) {
+        let idx = self.added_blocks.len();
+        self.added_blocks.push(kind);
+        self.selection = vec![format!("add{idx}").into()];
+        self.panel_open = true;
+        self.sync_preview(cx);
+        let label = match kind {
+            BlockType::Text => "text block",
+            BlockType::Image => "image",
+            BlockType::Button => "button",
+        };
+        self.show_toast(ToastTone::Success, format!("Added a {label} \u{2014} now selected. Edit it in the inspector."), cx);
+        cx.notify();
+    }
+
+    // ── composer menus & options ──────────────────────────────────────────────
+    pub fn toggle_chat_menu(&mut self, m: ChatMenu, cx: &mut Context<Self>) {
+        self.chat_menu = if self.chat_menu == Some(m) { None } else { Some(m) };
+        cx.notify();
+    }
+    pub fn close_chat_menu(&mut self, cx: &mut Context<Self>) {
+        self.chat_menu = None;
+        cx.notify();
+    }
+    /// Close every composer popover (attach/skills/model/DS/API) — used by the
+    /// click-outside backdrop.
+    pub fn close_composer_menus(&mut self, cx: &mut Context<Self>) {
+        self.chat_menu = None;
+        self.ds_picker_open = false;
+        self.api_panel_open = false;
+        cx.notify();
+    }
+    pub fn set_chat_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.chat_model = id.to_string().into();
+        cx.notify();
+    }
+    pub fn set_effort(&mut self, e: Effort, cx: &mut Context<Self>) {
+        self.effort = e;
+        cx.notify();
+    }
+    pub fn set_permission(&mut self, p: Permission, cx: &mut Context<Self>) {
+        self.permission = p;
+        cx.notify();
+    }
+    pub fn toggle_skill_idx(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(pos) = self.skills.iter().position(|s| *s == i) {
+            self.skills.remove(pos);
+        } else {
+            self.skills.push(i);
+        }
+        cx.notify();
+    }
+
+    // ── design-system picker ──────────────────────────────────────────────────
+    pub fn toggle_ds_picker(&mut self, cx: &mut Context<Self>) {
+        self.ds_picker_open = !self.ds_picker_open;
+        cx.notify();
+    }
+    pub fn applied_ds_name(&self) -> SharedString {
+        self.applied_ds
+            .as_ref()
+            .and_then(|id| self.projects.iter().find(|p| &p.id == id))
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "No design system".into())
+    }
+    pub fn choose_ds(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.ds_picker_open = false;
+        match &self.applied_ds {
+            Some(cur) if *cur != id => {
+                self.pending_ds = Some(id);
+                self.modal = Some(Modal::SwapDs);
+            }
+            _ => self.applied_ds = Some(id),
+        }
+        cx.notify();
+    }
+    pub fn clear_ds(&mut self, cx: &mut Context<Self>) {
+        if self.applied_ds.is_some() {
+            self.pending_ds = None;
+            self.ds_picker_open = false;
+            self.modal = Some(Modal::SwapDs);
+        }
+        cx.notify();
+    }
+    pub fn confirm_swap_ds(&mut self, cx: &mut Context<Self>) {
+        self.applied_ds = self.pending_ds.take();
+        self.modal = None;
+        let msg = if self.applied_ds.is_some() { "Design system applied to this project." } else { "Design system removed." };
+        self.show_toast(ToastTone::Success, msg, cx);
+        cx.notify();
+    }
+    pub fn cancel_swap_ds(&mut self, cx: &mut Context<Self>) {
+        self.pending_ds = None;
+        self.modal = None;
+        cx.notify();
+    }
+
+    // ── API integration panel ─────────────────────────────────────────────────
+    pub fn toggle_api_panel(&mut self, cx: &mut Context<Self>) {
+        self.api_panel_open = !self.api_panel_open;
+        self.chat_menu = None;
+        cx.notify();
+    }
+    pub fn attach_openapi(&mut self, cx: &mut Context<Self>) {
+        self.api_spec = Some(sample_api_spec());
+        self.api_panel_open = true;
+        self.chat_menu = None;
+        self.show_toast(ToastTone::Success, "OpenAPI spec parsed \u{2014} 5 endpoints found.", cx);
+        cx.notify();
+    }
+    pub fn toggle_endpoint(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(spec) = &mut self.api_spec
+            && let Some(ep) = spec.endpoints.get_mut(i)
+        {
+            ep.bound = !ep.bound;
+            cx.notify();
+        }
+    }
+    pub fn toggle_spa(&mut self, cx: &mut Context<Self>) {
+        self.spa_mode = !self.spa_mode;
+        cx.notify();
+    }
+    pub fn remove_api_spec(&mut self, cx: &mut Context<Self>) {
+        self.api_spec = None;
+        self.api_panel_open = false;
+        cx.notify();
+    }
+    pub fn api_bound_count(&self) -> usize {
+        self.api_spec.as_ref().map(|s| s.endpoints.iter().filter(|e| e.bound).count()).unwrap_or(0)
+    }
+
+    // ── collapse toggles ──────────────────────────────────────────────────────
+    pub fn toggle_chat(&mut self, cx: &mut Context<Self>) {
+        self.chat_open = !self.chat_open;
+        cx.notify();
+    }
+    pub fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        self.panel_open = !self.panel_open;
+        cx.notify();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Modals: toast, publish, settings, share, history
+    // ════════════════════════════════════════════════════════════════════════
+    pub fn show_toast(&mut self, tone: ToastTone, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.toast_note = Some(Toast { tone, msg: msg.into() });
+        self.toast_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(4200)).await;
+            let _ = this.update(cx, |a, cx| {
+                a.toast_note = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+    pub fn dismiss_note(&mut self, cx: &mut Context<Self>) {
+        self.toast_task = None;
+        self.toast_note = None;
+        cx.notify();
+    }
+
+    // ── publish ───────────────────────────────────────────────────────────────
+    pub fn set_publish_tab(&mut self, t: PublishTab, cx: &mut Context<Self>) {
+        self.publish_tab = t;
+        cx.notify();
+    }
+    pub fn set_export_kind(&mut self, k: ExportKind, cx: &mut Context<Self>) {
+        self.export_kind = k;
+        cx.notify();
+    }
+    pub fn do_publish(&mut self, cx: &mut Context<Self>) {
+        self.deploying = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1700)).await;
+            let _ = this.update(cx, |a, cx| {
+                a.deploying = false;
+                a.published = true;
+                cx.notify();
+            });
         })
         .detach();
     }
-    pub fn remove_attachment(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.attachments.retain(|a| a.id != id);
+    pub fn copy_link(&mut self, cx: &mut Context<Self>) {
+        self.show_toast(ToastTone::Idle, "Link copied to clipboard.", cx);
+    }
+
+    // ── settings ──────────────────────────────────────────────────────────────
+    pub fn set_settings_tab(&mut self, t: SettingsTab, cx: &mut Context<Self>) {
+        self.settings_tab = t;
         cx.notify();
     }
-    pub fn dismiss_toast(&mut self, cx: &mut Context<Self>) {
-        self.toast = false;
-        self.status = Status::Compiled;
+    pub fn toggle_ctx(&mut self, cx: &mut Context<Self>) {
+        self.pruning = !self.pruning;
         cx.notify();
+    }
+    pub fn toggle_prompt_cache(&mut self, cx: &mut Context<Self>) {
+        self.caching = !self.caching;
+        cx.notify();
+    }
+    pub fn inc_heal(&mut self, cx: &mut Context<Self>) {
+        self.heal_attempts = (self.heal_attempts + 1).min(5);
+        cx.notify();
+    }
+    pub fn dec_heal(&mut self, cx: &mut Context<Self>) {
+        self.heal_attempts = self.heal_attempts.saturating_sub(1).max(1);
+        cx.notify();
+    }
+    pub fn toggle_mcp(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(m) = self.mcp_list.iter_mut().find(|m| m.id == id) {
+            m.on = !m.on;
+            cx.notify();
+        }
+    }
+    pub fn remove_mcp(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.mcp_list.retain(|m| m.id != id);
+        cx.notify();
+    }
+    pub fn add_mcp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.mcp_name.read(cx).value().trim().to_string();
+        let cmd = self.mcp_cmd.read(cx).value().trim().to_string();
+        if name.is_empty() || cmd.is_empty() {
+            return;
+        }
+        let id = self.mcp_next_id;
+        self.mcp_next_id += 1;
+        self.mcp_list.push(McpServer { id, name: name.into(), meta: cmd.into(), on: true });
+        self.mcp_name.update(cx, |s, cx| s.set_value("", window, cx));
+        self.mcp_cmd.update(cx, |s, cx| s.set_value("", window, cx));
+        self.show_toast(ToastTone::Success, "MCP server added and connected.", cx);
+    }
+    pub fn connect_acp(&mut self, cx: &mut Context<Self>) {
+        if self.acp_url.read(cx).value().trim().len() < 6 {
+            return;
+        }
+        self.acp_connected = true;
+        self.show_toast(ToastTone::Success, "Agent connected over ACP.", cx);
+        cx.notify();
+    }
+    pub fn disconnect_acp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.acp_connected = false;
+        self.acp_url.update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+
+    // ── share ─────────────────────────────────────────────────────────────────
+    pub fn toggle_share_menu(&mut self, m: ShareMenu, cx: &mut Context<Self>) {
+        self.share_menu = if self.share_menu == Some(m) { None } else { Some(m) };
+        cx.notify();
+    }
+    pub fn close_share_menu(&mut self, cx: &mut Context<Self>) {
+        self.share_menu = None;
+        cx.notify();
+    }
+    pub fn set_share_role(&mut self, r: ShareRole, cx: &mut Context<Self>) {
+        self.share_role = r;
+        self.share_menu = None;
+        cx.notify();
+    }
+    pub fn set_link_access(&mut self, a: LinkAccess, cx: &mut Context<Self>) {
+        self.link_access = a;
+        self.share_menu = None;
+        cx.notify();
+    }
+    pub fn set_collab_role(&mut self, i: usize, r: ShareRole, cx: &mut Context<Self>) {
+        if i == 1 {
+            self.collab_mk = r;
+        } else {
+            self.collab_ah = r;
+        }
+        self.share_menu = None;
+        cx.notify();
+    }
+    pub fn invite_sent(&mut self, cx: &mut Context<Self>) {
+        self.show_toast(ToastTone::Success, "Invitation sent \u{2014} they\u{2019}ll get an email.", cx);
+    }
+
+    // ── history ───────────────────────────────────────────────────────────────
+    pub fn restore_version(&mut self, cx: &mut Context<Self>) {
+        self.modal = None;
+        self.show_toast(ToastTone::Success, "Restored to this version.", cx);
     }
 }
 
 impl Render for StudioApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         ui::render(self, window, cx)
-    }
-}
-
-/// Root view of the separate Settings window (see `StudioApp::open_settings_window`).
-struct SettingsWindow {
-    app: Entity<StudioApp>,
-}
-
-impl Render for SettingsWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let app = self.app.clone();
-        app.update(cx, |app, cx| ui::overlays::settings(app, window, cx).into_any_element())
     }
 }
 
@@ -1007,26 +1276,7 @@ fn serve(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
 }
 
 fn boot_script() -> String {
-    format!(
-        r#"
-window.__resources = {{
-  "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "{ORIGIN}/vendor/react.js",
-  "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "{ORIGIN}/vendor/react-dom.js"
-}};
-{bridge}
-"#,
-        bridge = ipc::BRIDGE_JS
-    )
-}
-
-// ── prompt intent detection (mock `ERR` / `FORM` regexes) ───────────────────
-fn contains_any(hay: &str, needles: &[&str]) -> bool {
-    let low = hay.to_lowercase();
-    needles.iter().any(|n| low.contains(*n))
-}
-fn is_error_prompt(text: &str) -> bool {
-    contains_any(text, &["offline", "timeout", "no internet", "network", "crash", "\u{641}\u{634}\u{644}", "\u{627}\u{646}\u{642}\u{637}\u{627}\u{639}"])
-}
-fn is_form_prompt(text: &str) -> bool {
-    contains_any(text, &["form", "order", "checkout", "payment", "\u{62f}\u{641}\u{639}", "\u{637}\u{644}\u{628}"])
+    // The Layali preview is a self-contained vanilla page, so the only thing we
+    // inject is the click/lifecycle bridge (state is pushed in via __wfApply).
+    ipc::BRIDGE_JS.to_string()
 }

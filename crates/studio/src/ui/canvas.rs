@@ -1,256 +1,120 @@
-//! Center canvas. The generated website renders in an **embedded webview**
-//! (built as a child of the gpui window in `crate::app`) sized to the device
-//! frame. Because webkit paints above GPUI content *regardless of element
-//! order*, it is hidden whenever a native overlay (empty state, busy, error)
-//! must cover the *entire* canvas, and its frame is narrowed (not hidden)
-//! when the Settings popover only needs to cover the canvas's right edge —
-//! narrowing physically moves the embedded window out from under the
-//! popover instead of trying to out-of-order it on top.
+//! Center canvas. The generated website renders in the **embedded webview**
+//! (built as a child of the gpui window in `crate::app`), sized to the device
+//! frame. Because webkit paints above GPUI content regardless of order, its
+//! frame is only laid out when nothing must cover the canvas; the actual
+//! show()/hide() is centralized in [`crate::ui::render`].
 
-use gpui::{Context, Window, div, prelude::*, px};
+use gpui::{Context, SharedString, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, v_flex};
 
 use crate::app::StudioApp;
-use crate::state::{Device, Status};
+use crate::state::{Device, Dir};
 use crate::theme;
-use crate::ui::widgets::{brand_badge, icon};
+use crate::ui::widgets::icon;
 
 pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
-    let show_empty = !app.generated && !app.busy && app.status != Status::Error;
-    // The webview renders above GPUI, so it may only be visible when no overlay
-    // needs to cover the canvas.
-    let show_preview = app.generated && !app.busy && app.status != Status::Error;
-
-    if let Some(preview) = &app.preview {
-        preview.update(cx, |w, _| {
-            if show_preview {
-                w.show();
-            } else {
-                w.hide();
-            }
-        });
-    }
+    let show_empty = !app.generated && !app.busy;
+    let show_preview = app.generated && !app.busy && app.modal.is_none();
 
     div()
         .relative()
         .size_full()
-        .bg(theme::canvas())
+        .bg(theme::bg_sunken())
         .when(show_preview, |d| d.child(preview_frame(app)))
         .when(show_empty, |d| d.child(empty_state(app, cx)))
-        .when(app.busy, |d| d.child(busy_overlay(app)))
-        .when(app.status == Status::Error, |d| d.child(error_overlay(app, cx)))
+        .when(app.busy, |d| d.child(compiling_overlay(app)))
+        .when(show_preview && app.review_open, |d| d.child(review_labels(app)))
 }
 
-/// The device-sized frame that hosts the preview webview.
 fn preview_frame(app: &StudioApp) -> impl IntoElement {
-    let (frame_w, radius) = if app.review_open {
-        (1400.0, 0.0)
-    } else {
-        match app.device {
-            Device::Desktop => (1120.0, 10.0),
-            Device::Tablet => (768.0, 10.0),
-            Device::Mobile => (390.0, 24.0),
-        }
+    let max_w = match app.device {
+        Device::Desktop => 1200.0,
+        Device::Tablet => 788.0,
+        Device::Mobile => 392.0,
     };
-    let pad = if app.review_open {
-        0.0
-    } else if app.device == Device::Desktop {
-        26.0
-    } else {
-        30.0
-    };
-    // Settings is a popover anchored to the window's top-right, absolutely
-    // positioned over the canvas (see `overlays.rs`). Since the embedded
-    // webview always paints above it regardless, reserve enough right
-    // padding to clear its left edge (`right` offset + width from
-    // `overlays.rs`, plus a small gap) so it ends up over bare canvas
-    // background instead of the webview. Activity/History/Review don't need
-    // this — they live in the sidebar (`sidebar.rs`), which the canvas
-    // shrinks to make room for through ordinary flex layout.
-    let extra_right = if app.show_settings { 374.0 + 16.0 } else { 0.0 };
-
     div()
         .absolute()
         .inset_0()
-        .p(px(pad))
-        .pr(px(pad + extra_right))
         .flex()
         .justify_center()
+        .overflow_hidden()
+        .p(px(22.0))
         .child(
             div()
                 .w_full()
-                .max_w(px(frame_w))
+                .max_w(px(max_w))
                 .h_full()
-                .rounded(px(radius))
+                .rounded(px(theme::RADIUS_LG))
                 .overflow_hidden()
-                .bg(theme::white(1.0))
+                .border_1()
+                .border_color(theme::line())
+                .bg(theme::site_bg())
+                .shadow(theme::shadow_pop())
                 .children(app.preview.as_ref().cloned()),
         )
 }
 
-fn empty_state(_app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
-    div()
-        .absolute()
-        .inset_0()
-        .items_center()
-        .justify_center()
-        .flex()
-        .child(
-            v_flex()
-                .items_center()
-                .max_w(px(420.0))
-                .child(brand_badge(60.0, 30.0))
-                .child(
-                    div()
-                        .mt(px(20.0))
-                        .font_family(theme::FONT_DISPLAY)
-                        .font_semibold()
-                        .text_size(px(21.0))
-                        .text_center()
-                        .child("Describe your website to begin"),
-                )
-                .child(
-                    div()
-                        .mt(px(8.0))
-                        .text_size(px(14.5))
-                        .text_color(theme::muted())
-                        .text_center()
-                        .line_height(px(23.0))
-                        .child("Use the chat on the left \u{2014} in Arabic or English. WebFluent builds a live, editable site. No code, ever."),
-                )
-                .child(
-                    h_flex()
-                        .mt(px(22.0))
-                        .gap(px(9.0))
-                        .flex_wrap()
-                        .justify_center()
-                        .children(crate::state::STARTERS.iter().enumerate().map(|(i, s)| {
-                            let prompt = s.prompt;
-                            div()
-                                .id(("starter", i))
-                                .px(px(15.0))
-                                .py(px(8.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(theme::white(0.14))
-                                .bg(theme::panel())
-                                .text_size(px(13.0))
-                                .font_medium()
-                                .text_color(theme::text_soft())
-                                .cursor_pointer()
-                                .hover(|st| st.border_color(theme::accent()))
-                                .child(s.chip)
-                                .on_click(cx.listener(move |a, _, window, cx| a.start_with(prompt, window, cx)))
-                        })),
-                ),
-        )
+fn empty_state(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    let rtl = app.dir == Dir::Rtl;
+    let sugg: [&str; 3] = if rtl {
+        [
+            "\u{645}\u{642}\u{647}\u{649} \u{633}\u{637}\u{62d} \u{644}\u{644}\u{645}\u{648}\u{633}\u{64a}\u{642}\u{649} \u{627}\u{644}\u{62d}\u{64a}\u{651}\u{629} \u{641}\u{64a} \u{627}\u{644}\u{631}\u{64a}\u{627}\u{636}",
+            "\u{635}\u{641}\u{62d}\u{629} \u{645}\u{642}\u{647}\u{649} \u{645}\u{639} \u{642}\u{627}\u{626}\u{645}\u{629} \u{648}\u{645}\u{648}\u{627}\u{639}\u{64a}\u{62f}",
+            "\u{628}\u{648}\u{631}\u{62a}\u{641}\u{648}\u{644}\u{64a}\u{648} \u{644}\u{645}\u{635}\u{648}\u{651}\u{631}",
+        ]
+    } else {
+        ["A rooftop live-music venue in Riyadh", "A caf\u{e9} landing with menu & hours", "A photographer\u{2019}s portfolio"]
+    };
+
+    div().absolute().inset_0().flex().items_center().justify_center().p(px(40.0)).child(
+        v_flex()
+            .items_center()
+            .max_w(px(460.0))
+            .child(div().size(px(64.0)).rounded(px(18.0)).bg(theme::accent_grad()).shadow(theme::glow_violet()).flex().items_center().justify_center().child(icon("sparkle", 26.0, theme::accent_contrast())))
+            .child(div().mt(px(20.0)).font_family(theme::FONT_DISPLAY).text_size(px(21.0)).font_semibold().text_color(theme::text_strong()).child("A blank canvas, ready when you are"))
+            .child(div().mt(px(8.0)).text_size(px(14.0)).text_color(theme::text_muted()).text_center().line_height(px(22.0)).child("Describe your site in the assistant, or start with one of these \u{2014} the preview builds here live."))
+            .child(v_flex().mt(px(22.0)).w_full().gap(px(9.0)).children(sugg.into_iter().enumerate().map(|(i, s)| suggestion_row(i, s, cx)))),
+    )
 }
 
-fn busy_overlay(app: &StudioApp) -> impl IntoElement {
-    let color = app.status.label_color(app.generated).1;
-    div()
-        .absolute()
-        .inset_0()
-        .bg(theme::hexa(0x14110f8c))
-        .flex()
+fn suggestion_row(i: usize, text: &str, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
+    let owned: SharedString = text.to_string().into();
+    let for_click = owned.clone();
+    h_flex()
+        .id(("cansugg", i))
         .items_center()
-        .justify_center()
-        .child(
-            h_flex()
-                .items_center()
-                .gap(px(13.0))
-                .px(px(22.0))
-                .py(px(14.0))
-                .bg(theme::panel())
-                .border_1()
-                .border_color(theme::border_strong())
-                .rounded(px(13.0))
-                .shadow_lg()
-                .child(icon("refresh", 20.0, color))
-                .child(div().text_size(px(14.0)).font_medium().child(app.sub_label.clone())),
-        )
+        .gap(px(11.0))
+        .p(px(13.0))
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_color(theme::line())
+        .bg(theme::bg_panel())
+        .text_size(px(13.5))
+        .text_color(theme::text_soft())
+        .cursor_pointer()
+        .hover(|s| s.border_color(theme::accent_ring()).bg(theme::accent_tint()).text_color(theme::text_strong()))
+        .child(icon("sparkle", 15.0, theme::accent()))
+        .child(div().flex_1().child(owned))
+        .child(icon("arrow-right", 15.0, theme::text_faint()))
+        .on_click(cx.listener(move |a, _, window, cx| a.run_suggestion(&for_click, window, cx)))
 }
 
-fn error_overlay(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
-    let title = format!("Couldn\u{2019}t reach {}", app.provider().name);
+fn compiling_overlay(app: &StudioApp) -> impl IntoElement {
+    div().absolute().inset_0().flex().items_center().justify_center().bg(theme::hexa(0x070809b8)).child(
+        v_flex()
+            .items_center()
+            .child(div().size(px(54.0)).rounded(px(16.0)).bg(theme::accent_grad()).shadow(theme::glow_violet()).flex().items_center().justify_center().child(icon("sparkle", 26.0, theme::accent_contrast())))
+            .child(div().mt(px(16.0)).text_size(px(14.0)).font_semibold().text_color(theme::text_strong()).child(SharedString::from(app.compile_text())))
+            .child(div().mt(px(6.0)).font_family(theme::FONT_MONO).text_size(px(12.0)).text_color(theme::text_muted()).child(SharedString::from(app.compile_sub()))),
+    )
+}
+
+/// BEFORE / AFTER labels + a center divider over the preview during review.
+/// The live wipe/clip is wired to the webview in the next phase.
+fn review_labels(_app: &StudioApp) -> impl IntoElement {
     div()
         .absolute()
         .inset_0()
-        .bg(theme::hexa(0x14110fd1))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            v_flex()
-                .items_center()
-                .max_w(px(430.0))
-                .px(px(24.0))
-                .child(
-                    div()
-                        .size(px(60.0))
-                        .rounded(px(16.0))
-                        .bg(theme::hexa(0xec6a5e29))
-                        .border_1()
-                        .border_color(theme::hexa(0xec6a5e66))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon("wifi-off", 28.0, theme::danger())),
-                )
-                .child(
-                    div()
-                        .mt(px(20.0))
-                        .font_family(theme::FONT_DISPLAY)
-                        .font_semibold()
-                        .text_size(px(21.0))
-                        .text_center()
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .mt(px(9.0))
-                        .text_size(px(14.5))
-                        .text_color(theme::hex(0xa89e96))
-                        .text_center()
-                        .line_height(px(23.0))
-                        .child("The request timed out with no response. Check your internet connection or your API key, then try again \u{2014} your project is safe."),
-                )
-                .child(
-                    h_flex()
-                        .mt(px(24.0))
-                        .gap(px(11.0))
-                        .child(
-                            h_flex()
-                                .id("err-retry")
-                                .items_center()
-                                .gap(px(8.0))
-                                .px(px(22.0))
-                                .py(px(11.0))
-                                .rounded(px(11.0))
-                                .bg(theme::accent())
-                                .text_color(theme::white(1.0))
-                                .font_semibold()
-                                .text_size(px(14.0))
-                                .cursor_pointer()
-                                .child(icon("refresh", 15.0, theme::white(1.0)))
-                                .child("Try again")
-                                .on_click(cx.listener(|a, _, window, cx| a.retry(window, cx))),
-                        )
-                        .child(
-                            div()
-                                .id("err-settings")
-                                .px(px(22.0))
-                                .py(px(11.0))
-                                .rounded(px(11.0))
-                                .border_1()
-                                .border_color(theme::white(0.14))
-                                .text_color(theme::text_dim())
-                                .font_semibold()
-                                .text_size(px(14.0))
-                                .cursor_pointer()
-                                .child("Check settings")
-                                .on_click(cx.listener(|a, _, _, cx| a.open_settings(cx))),
-                        ),
-                ),
-        )
+        .child(div().absolute().top(px(34.0)).left(px(36.0)).px(px(9.0)).py(px(4.0)).rounded(px(theme::RADIUS_XS)).bg(theme::black(0.7)).text_size(px(10.5)).font_bold().text_color(theme::text_muted()).child("BEFORE"))
+        .child(div().absolute().top(px(34.0)).right(px(36.0)).px(px(9.0)).py(px(4.0)).rounded(px(theme::RADIUS_XS)).bg(theme::accent_tint()).text_size(px(10.5)).font_bold().text_color(theme::accent()).child("AFTER"))
 }

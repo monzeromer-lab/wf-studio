@@ -11,19 +11,150 @@ use crate::theme;
 // ── Screens & top-level mode ────────────────────────────────────────────────
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    Login,
+    Home,
     Onboarding,
-    Studio,
+    Workspace,
+    DsWorkspace,
+}
+
+/// Which centered dialog (if any) is open over the app window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modal {
+    NewProject,
+    Exit,
+    SwapDs,
+    Compile,
+    Publish,
+    Share,
+    Settings,
+    History,
+    Profile,
+}
+
+/// Home dashboard filter tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeFilter {
+    All,
+    Website,
+    System,
+}
+
+/// How the assistant is connected (onboarding + settings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnMode {
+    Key,
+    Acp,
+}
+
+// ── Projects (Home dashboard) ───────────────────────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectKind {
+    Website,
+    System,
+}
+
+impl ProjectKind {
+    pub fn type_label(self) -> &'static str {
+        match self {
+            ProjectKind::Website => "Website",
+            ProjectKind::System => "Design system",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectStatus {
+    Published,
+    Draft,
+    Shared,
+}
+
+impl ProjectStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProjectStatus::Published => "Published",
+            ProjectStatus::Draft => "Draft",
+            ProjectStatus::Shared => "Shared",
+        }
+    }
+    pub fn color(self) -> Hsla {
+        match self {
+            ProjectStatus::Published => theme::success(),
+            ProjectStatus::Draft => theme::text_caption(),
+            ProjectStatus::Shared => theme::accent(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectTone {
+    Accent,
+    Violet,
+    Teal,
+    Blue,
+}
+
+impl ProjectTone {
+    pub fn color(self) -> Hsla {
+        match self {
+            ProjectTone::Accent => theme::accent(),
+            ProjectTone::Violet => theme::violet_soft(),
+            ProjectTone::Teal => theme::tone_teal(),
+            ProjectTone::Blue => theme::tone_blue(),
+        }
+    }
+    pub fn tint(self) -> Hsla {
+        match self {
+            ProjectTone::Accent => theme::accent_tint(),
+            ProjectTone::Violet => theme::violet_tint(),
+            ProjectTone::Teal => theme::hexa(0x5CCB9A24),
+            ProjectTone::Blue => theme::hexa(0x7FB0EE24),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Project {
+    pub id: SharedString,
+    pub kind: ProjectKind,
+    pub name: SharedString,
+    pub sub: SharedString,
+    pub updated: SharedString,
+    pub status: ProjectStatus,
+    pub mono: SharedString,
+    pub tone: ProjectTone,
+}
+
+/// The seed dashboard projects (mock `state.projects`).
+pub fn seed_projects() -> Vec<Project> {
+    use ProjectKind::*;
+    use ProjectStatus::*;
+    use ProjectTone::*;
+    let mk = |id: &str, kind, name: &str, sub: &str, updated: &str, status, mono: &str, tone| Project {
+        id: id.to_string().into(),
+        kind,
+        name: name.to_string().into(),
+        sub: sub.to_string().into(),
+        updated: updated.to_string().into(),
+        status,
+        mono: mono.to_string().into(),
+        tone,
+    };
+    vec![
+        mk("p1", Website, "Layali", "Rooftop venue \u{b7} Riyadh", "2 min ago", Published, "\u{644}", Accent),
+        mk("p2", Website, "Yasmine Caf\u{e9}", "Caf\u{e9} landing page", "Yesterday", Draft, "\u{64a}", Violet),
+        mk("p3", Website, "Naseem Store", "Online shop", "3 days ago", Draft, "\u{646}", Teal),
+        mk("ds1", System, "Studio DS", "12 components \u{b7} 40 tokens", "1 week ago", Shared, "S", Blue),
+    ]
 }
 
 /// The compile/generation status surfaced in the top-bar badge (FR-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Idle,
-    Generating,
     Compiling,
-    SelfHeal,
     Compiled,
-    Attention,
     Error,
 }
 
@@ -33,11 +164,8 @@ impl Status {
         match self {
             Status::Idle if generated => ("Ready", theme::hex(0x9d938b)),
             Status::Idle => ("No project yet", theme::hex(0x9d938b)),
-            Status::Generating => ("Generating\u{2026}", theme::accent()),
             Status::Compiling => ("Compiling\u{2026}", theme::accent()),
-            Status::SelfHeal => ("Self-healing\u{2026}", theme::warn()),
             Status::Compiled => ("Compiled", theme::success()),
-            Status::Attention => ("Needs attention", theme::warn()),
             Status::Error => ("Couldn\u{2019}t compile", theme::danger()),
         }
     }
@@ -56,40 +184,12 @@ pub enum Device {
     Mobile,
 }
 
-/// API-key connection test state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tested {
-    Idle,
-    Ok,
-    Fail,
-}
-
-/// Which action the error overlay should retry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorAction {
-    Generate,
-    Edit,
-}
-
-/// Semantic tone shared by chat bubbles and activity/log dots.
+/// Semantic tone for compile-log entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
-    Plain,
     Ok,
-    Info,
     Warn,
     Err,
-}
-
-impl Tone {
-    pub fn dot(self) -> Hsla {
-        match self {
-            Tone::Ok => theme::success(),
-            Tone::Warn => theme::warn(),
-            Tone::Err => theme::danger(),
-            Tone::Info | Tone::Plain => theme::muted(),
-        }
-    }
 }
 
 // ── Providers & models ──────────────────────────────────────────────────────
@@ -109,14 +209,7 @@ pub struct Provider {
     pub by: &'static str,
     pub mono: &'static str,
     pub mono_bg: u32,
-    pub models: &'static [&'static str],
     pub recommended: bool,
-}
-
-impl Provider {
-    pub fn default_model(&self) -> &'static str {
-        self.models[0]
-    }
 }
 
 pub const PROVIDERS: &[Provider] = &[
@@ -126,7 +219,6 @@ pub const PROVIDERS: &[Provider] = &[
         by: "Anthropic",
         mono: "C",
         mono_bg: 0xc4634a,
-        models: &["Claude Sonnet 4.5", "Claude Haiku 4.5"],
         recommended: true,
     },
     Provider {
@@ -135,7 +227,6 @@ pub const PROVIDERS: &[Provider] = &[
         by: "GPT-4.1",
         mono: "O",
         mono_bg: 0x10a37f,
-        models: &["GPT-4.1", "GPT-4.1 mini"],
         recommended: false,
     },
     Provider {
@@ -144,7 +235,6 @@ pub const PROVIDERS: &[Provider] = &[
         by: "Google",
         mono: "G",
         mono_bg: 0x4285f4,
-        models: &["Gemini 2.5 Pro", "Gemini 2.5 Flash"],
         recommended: false,
     },
     Provider {
@@ -153,7 +243,6 @@ pub const PROVIDERS: &[Provider] = &[
         by: "DeepSeek",
         mono: "D",
         mono_bg: 0x4d6bfe,
-        models: &["DeepSeek V3", "DeepSeek R1"],
         recommended: false,
     },
     Provider {
@@ -162,7 +251,6 @@ pub const PROVIDERS: &[Provider] = &[
         by: "Moonshot",
         mono: "K",
         mono_bg: 0x6b4dfe,
-        models: &["Kimi K2", "Kimi K2 Turbo"],
         recommended: false,
     },
     Provider {
@@ -171,7 +259,6 @@ pub const PROVIDERS: &[Provider] = &[
         by: "Zhipu",
         mono: "Z",
         mono_bg: 0x3a7afe,
-        models: &["GLM-4.6", "GLM-4.5 Air"],
         recommended: false,
     },
 ];
@@ -180,120 +267,395 @@ pub fn provider(id: ProviderId) -> &'static Provider {
     PROVIDERS.iter().find(|p| p.id == id).unwrap()
 }
 
-// ── Skills ──────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// Cinematic workspace model (composer, inspector, review, blocks, API)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Which composer popover is open (attach / skills / model+permissions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillId {
-    Seo,
-    A11y,
-    Rtl,
-    Menu,
-    Booking,
-    Analytics,
+pub enum ChatMenu {
+    Attach,
+    Skills,
+    Model,
 }
 
-pub struct Skill {
-    pub id: SkillId,
+/// Assistant reasoning effort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effort {
+    Fast,
+    Balanced,
+    Max,
+}
+impl Effort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Effort::Fast => "Fast",
+            Effort::Balanced => "Balanced",
+            Effort::Max => "Max",
+        }
+    }
+}
+
+/// How much the assistant may do without asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    Review,
+    Safe,
+    Manual,
+}
+impl Permission {
+    pub fn label(self) -> &'static str {
+        match self {
+            Permission::Review => "Review each change",
+            Permission::Safe => "Auto-apply safe edits",
+            Permission::Manual => "Ask before anything",
+        }
+    }
+    pub fn desc(self) -> &'static str {
+        match self {
+            Permission::Review => "Nothing sticks until you approve it",
+            Permission::Safe => "Text & style apply; structure asks first",
+            Permission::Manual => "Confirm every action, even reads",
+        }
+    }
+}
+
+/// Chat model options (mock `modelDefs`).
+pub struct ModelDef {
+    pub id: &'static str,
     pub name: &'static str,
-    pub desc: &'static str,
+    pub note: &'static str,
 }
-
-pub const SKILLS: &[Skill] = &[
-    Skill { id: SkillId::Seo, name: "SEO optimization", desc: "Meta tags, clean headings, sitemap" },
-    Skill { id: SkillId::A11y, name: "Accessibility", desc: "WCAG contrast, labels, alt text" },
-    Skill { id: SkillId::Rtl, name: "Arabic RTL polish", desc: "Logical CSS, Arabic typography" },
-    Skill { id: SkillId::Menu, name: "Restaurant menu", desc: "Structured menu with EGP prices" },
-    Skill { id: SkillId::Booking, name: "Table booking", desc: "Reservation form + confirmation" },
-    Skill { id: SkillId::Analytics, name: "Privacy analytics", desc: "Cookieless visit tracking" },
+pub const MODELS: &[ModelDef] = &[
+    ModelDef { id: "sonnet", name: "Claude Sonnet 4.5", note: "Balanced \u{2014} best for most builds" },
+    ModelDef { id: "opus", name: "Claude Opus 4.1", note: "Deepest reasoning, slower" },
+    ModelDef { id: "gpt", name: "GPT-4.1", note: "OpenAI" },
+    ModelDef { id: "gemini", name: "Gemini 2.5 Pro", note: "Google" },
 ];
-
-pub fn skill(id: SkillId) -> &'static Skill {
-    SKILLS.iter().find(|s| s.id == id).unwrap()
+pub fn model_def(id: &str) -> &'static ModelDef {
+    MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
 }
 
-// ── Starter & sample prompts ────────────────────────────────────────────────
-pub struct Starter {
-    pub chip: &'static str,
-    pub prompt: &'static str,
+/// Composer skills (mock `skillDefs`).
+pub const SKILL_NAMES: &[&str] = &["Responsive layout", "SEO basics", "Accessibility (WCAG)", "Copywriting", "Motion & animation", "RTL polish"];
+
+// ── Selectable site elements (inspector + outline) ──────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElKind {
+    Text,
+    Button,
+    Image,
 }
 
-pub const STARTERS: &[Starter] = &[
-    Starter {
-        chip: "\u{2615}\u{fe0f} Cairo caf\u{e9}",
-        prompt: "\u{645}\u{642}\u{647}\u{649} \u{635}\u{63a}\u{64a}\u{631} \u{641}\u{64a} \u{648}\u{633}\u{637} \u{627}\u{644}\u{642}\u{627}\u{647}\u{631}\u{629} \u{64a}\u{642}\u{62f}\u{645} \u{642}\u{647}\u{648}\u{629} \u{62a}\u{631}\u{643}\u{64a} \u{648}\u{62d}\u{644}\u{648}\u{64a}\u{627}\u{62a} \u{634}\u{631}\u{642}\u{64a}\u{629}\u{60c} \u{645}\u{639} \u{642}\u{627}\u{626}\u{645}\u{629} \u{637}\u{639}\u{627}\u{645} \u{648}\u{645}\u{648}\u{627}\u{639}\u{64a}\u{62f}",
-    },
-    Starter {
-        chip: "Boutique shop",
-        prompt: "A landing page for a boutique clothing shop with a hero, featured products, and contact details",
-    },
-    Starter {
-        chip: "Portfolio",
-        prompt: "A clean portfolio for a freelance designer with an about section, selected work, and a contact form",
-    },
-];
-
-pub struct Sample {
-    pub icon: &'static str,
-    pub icon_bg: (u32, u32),
-    pub title: &'static str,
-    pub desc: &'static str,
-    pub prompt: &'static str,
-}
-
-pub const SAMPLES: &[Sample] = &[
-    Sample {
-        icon: "\u{2615}",
-        icon_bg: (0xc4634a, 0x8a3f28),
-        title: "Cairo caf\u{e9} or restaurant",
-        desc: "Menu, hours, and a reservation prompt \u{2014} in Arabic.",
-        prompt: STARTERS[0].prompt,
-    },
-    Sample {
-        icon: "\u{1F45C}",
-        icon_bg: (0xb0779a, 0x7a4d63),
-        title: "Boutique shop landing page",
-        desc: "Hero, featured products, and a contact section.",
-        prompt: STARTERS[1].prompt,
-    },
-    Sample {
-        icon: "\u{1F4BC}",
-        icon_bg: (0x6a7fb0, 0x455680),
-        title: "Freelancer portfolio",
-        desc: "About, selected work, and a way to get in touch.",
-        prompt: STARTERS[2].prompt,
-    },
-];
-
-// ── Canvas selection sections (the mock's `SEL` table) ──────────────────────
-pub struct SelInfo {
+pub struct ElMeta {
     pub key: &'static str,
     pub label: &'static str,
-    pub tries: [&'static str; 2],
-    /// Whether the floating Quick Inspector applies (mock shows it for `heading`).
-    pub inspector: bool,
+    pub icon: &'static str,
+    pub kind: ElKind,
 }
 
-/// The selectable regions of the generated site, in document order.
-pub const SECTIONS: &[SelInfo] = &[
-    SelInfo { key: "header", label: "Header", tries: ["Make it translucent", "Add a phone number"], inspector: false },
-    SelInfo { key: "nav", label: "Navigation", tries: ["Add a \u{201c}Contact\u{201d} link", "Make the links bolder"], inspector: false },
-    SelInfo { key: "hero", label: "Hero section", tries: ["Make it warmer and bigger", "Add an online order form"], inspector: false },
-    SelInfo { key: "heading", label: "Heading", tries: ["Make it warmer and bigger", "Shorten the wording"], inspector: true },
-    SelInfo { key: "subheading", label: "Sub-headline", tries: ["Reword it to be more inviting", "Make it shorter"], inspector: false },
-    SelInfo { key: "cta", label: "Call-to-action button", tries: ["Change label to \u{201c}Reserve a table\u{201d}", "Add an online order form"], inspector: false },
-    SelInfo { key: "menu", label: "Menu list", tries: ["Add a chef\u{2019}s-pick badge", "Show prices in bold"], inspector: false },
-    SelInfo { key: "about", label: "About section", tries: ["Make it warmer and bigger", "Shorten the wording"], inspector: false },
-    SelInfo { key: "hours", label: "Hours & location", tries: ["Add a phone number", "Highlight today\u{2019}s hours"], inspector: false },
-    SelInfo { key: "footer", label: "Footer", tries: ["Add social links", "Make it darker"], inspector: false },
+pub const ELEMENTS: &[ElMeta] = &[
+    ElMeta { key: "brand", label: "Logo & brand", icon: "sparkle", kind: ElKind::Text },
+    ElMeta { key: "nav", label: "Navigation", icon: "grid", kind: ElKind::Text },
+    ElMeta { key: "headerCta", label: "Header button", icon: "plus", kind: ElKind::Button },
+    ElMeta { key: "eyebrow", label: "Eyebrow pill", icon: "zap", kind: ElKind::Text },
+    ElMeta { key: "heading", label: "Heading", icon: "type", kind: ElKind::Text },
+    ElMeta { key: "sub", label: "Paragraph", icon: "type", kind: ElKind::Text },
+    ElMeta { key: "cta", label: "Primary button", icon: "plus", kind: ElKind::Button },
+    ElMeta { key: "cta2", label: "Secondary button", icon: "plus", kind: ElKind::Button },
+    ElMeta { key: "visual", label: "Hero image", icon: "image", kind: ElKind::Image },
+    ElMeta { key: "lineupTitle", label: "Lineup title", icon: "type", kind: ElKind::Text },
+    ElMeta { key: "footer", label: "Footer", icon: "grid", kind: ElKind::Text },
 ];
 
-pub fn section(key: &str) -> &'static SelInfo {
-    SECTIONS.iter().find(|s| s.key == key).unwrap_or(&SECTIONS[0])
+pub fn element(key: &str) -> Option<&'static ElMeta> {
+    ELEMENTS.iter().find(|e| e.key == key)
 }
 
-/// Map an arbitrary (e.g. bridge-supplied) string back to one of `SECTIONS`'
-/// own `&'static str` keys, or `None` if it isn't a recognized section.
-pub fn section_key(key: &str) -> Option<&'static str> {
-    SECTIONS.iter().find(|s| s.key == key).map(|s| s.key)
+/// The outline groups (mock `groupsDef`): `(id, label, [element keys])`.
+pub const OUTLINE_GROUPS: &[(&str, &str, &[&str])] = &[
+    ("header", "Header", &["brand", "nav", "headerCta"]),
+    ("hero", "Hero section", &["eyebrow", "heading", "sub", "cta", "cta2", "visual"]),
+    ("lineup", "Lineup grid", &["lineupTitle", "visual"]),
+    ("footer", "Footer", &["footer"]),
+];
+
+// ── Live style edits (inspector) ────────────────────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+}
+impl Align {
+    pub fn value(self) -> &'static str {
+        match self {
+            Align::Start => "start",
+            Align::Center => "center",
+            Align::End => "end",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ElEdit {
+    pub color: Option<SharedString>,
+    pub size: Option<f32>,
+    pub weight: Option<u16>,
+    pub align: Option<Align>,
+    pub bg: Option<SharedString>,
+    pub radius: Option<f32>,
+}
+
+/// A block the user added to the page from the outline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockType {
+    Text,
+    Image,
+    Button,
+}
+impl BlockType {
+    pub fn label(self) -> &'static str {
+        match self {
+            BlockType::Text => "Text block",
+            BlockType::Image => "Image block",
+            BlockType::Button => "Button",
+        }
+    }
+}
+
+/// Which view the right-hand context panel shows (mock `rm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightMode {
+    Working,
+    Review,
+    Multi,
+    Inspector,
+    Outline,
+    Start,
+}
+
+// ── API integration (OpenAPI) ───────────────────────────────────────────────
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    pub method: &'static str,
+    pub path: &'static str,
+    pub desc: &'static str,
+    pub bound: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiSpec {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub base: &'static str,
+    pub endpoints: Vec<Endpoint>,
+}
+
+pub fn sample_api_spec() -> ApiSpec {
+    ApiSpec {
+        name: "layali-api.yaml",
+        version: "OpenAPI 3.1",
+        base: "https://api.layali.app/v1",
+        endpoints: vec![
+            Endpoint { method: "GET", path: "/venues", desc: "List rooftop venues", bound: true },
+            Endpoint { method: "GET", path: "/events", desc: "Upcoming lineup", bound: true },
+            Endpoint { method: "POST", path: "/reservations", desc: "Create a booking", bound: true },
+            Endpoint { method: "GET", path: "/reservations/{id}", desc: "Booking status", bound: false },
+            Endpoint { method: "POST", path: "/newsletter", desc: "Subscribe to updates", bound: false },
+        ],
+    }
+}
+
+/// Method → `(fg, tinted bg)` for the endpoint pills.
+pub fn method_colors(method: &str) -> (Hsla, Hsla) {
+    match method {
+        "GET" => (theme::accent(), theme::accent_tint()),
+        "POST" => (theme::success(), theme::hexa(0x5CCB9A24)),
+        "PUT" => (theme::warning(), theme::warning_tint()),
+        "DELETE" => (theme::danger(), theme::danger_tint()),
+        _ => (theme::text_muted(), theme::bg_raised()),
+    }
+}
+
+// ── Modals: publish / settings / share / toast / mcp ────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishTab {
+    Deploy,
+    Export,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    Static,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    Providers,
+    Mcp,
+    Advanced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareRole {
+    Edit,
+    View,
+}
+impl ShareRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShareRole::Edit => "Can edit",
+            ShareRole::View => "Can view",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkAccess {
+    Restricted,
+    Anyone,
+}
+impl LinkAccess {
+    pub fn label(self) -> &'static str {
+        match self {
+            LinkAccess::Restricted => "Restricted",
+            LinkAccess::Anyone => "Anyone with the link",
+        }
+    }
+    pub fn desc(self) -> &'static str {
+        match self {
+            LinkAccess::Restricted => "Only invited people can open this",
+            LinkAccess::Anyone => "Can view the published site",
+        }
+    }
+}
+
+/// Which Share-dialog dropdown is currently open (mock `shareMenu`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareMenu {
+    InviteRole,
+    LinkAccess,
+    Collab(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastTone {
+    Success,
+    Idle,
+}
+impl ToastTone {
+    /// `(icon, fg, tint bg, border)`.
+    pub fn style(self) -> (&'static str, Hsla, Hsla, Hsla) {
+        match self {
+            ToastTone::Success => ("check-circle", theme::success(), theme::success_tint(), theme::hexa(0x5CCB9A59)),
+            ToastTone::Idle => ("check", theme::text_soft(), theme::bg_hover(), theme::line_strong()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub tone: ToastTone,
+    pub msg: SharedString,
+}
+
+/// An MCP server row (Settings → MCP servers).
+#[derive(Debug, Clone)]
+pub struct McpServer {
+    pub id: u64,
+    pub name: SharedString,
+    pub meta: SharedString,
+    pub on: bool,
+}
+
+pub fn seed_mcp() -> Vec<McpServer> {
+    let mk = |id, name: &str, meta: &str, on| McpServer { id, name: name.to_string().into(), meta: meta.to_string().into(), on };
+    vec![
+        mk(1, "Payments \u{b7} Stripe", "npx stripe-mcp", true),
+        mk(2, "Content \u{b7} Sanity", "https://mcp.sanity.io", true),
+        mk(3, "Analytics", "npx analytics-mcp", false),
+    ]
+}
+
+/// A collaborator on the Share dialog (static demo data).
+pub struct Collaborator {
+    pub initials: &'static str,
+    pub name: &'static str,
+    pub owner: bool,
+    pub online: bool,
+}
+
+pub const COLLABORATORS: &[Collaborator] = &[
+    Collaborator { initials: "RS", name: "Rana Saeed (you)", owner: true, online: true },
+    Collaborator { initials: "MK", name: "Maya Kamal", owner: false, online: true },
+    Collaborator { initials: "AH", name: "Ali Hassan", owner: false, online: false },
+];
+
+/// Build-log entry (Compile-log modal, static demo data).
+pub struct CompileEntry {
+    pub title: &'static str,
+    pub ms: &'static str,
+    pub time: &'static str,
+    pub note: &'static str,
+    pub note_tone: Tone,
+    pub icon: &'static str,
+    pub dot: fn() -> Hsla,
+    pub detail: Option<&'static str>,
+}
+
+pub fn compile_log() -> Vec<CompileEntry> {
+    vec![
+        CompileEntry {
+            title: "Compiled successfully",
+            ms: "3.8s",
+            time: "Just now",
+            note: "Self-healed 1 issue \u{2014} broken nav link repaired (retry 1 of 3).",
+            note_tone: Tone::Warn,
+            icon: "shield",
+            dot: theme::warning,
+            detail: Some("line 42 \u{b7} <a href> pointed to a missing anchor #book \u{2192} rewrote to #reserve"),
+        },
+        CompileEntry {
+            title: "Compiled successfully",
+            ms: "4.1s",
+            time: "2 min ago",
+            note: "5 sections generated \u{b7} no errors.",
+            note_tone: Tone::Ok,
+            icon: "check-circle",
+            dot: theme::success,
+            detail: None,
+        },
+        CompileEntry {
+            title: "Build failed",
+            ms: "1.2s",
+            time: "5 min ago",
+            note: "Provider rate limit (429) \u{2014} retried and recovered.",
+            note_tone: Tone::Err,
+            icon: "close",
+            dot: theme::danger,
+            detail: Some("Anthropic API \u{b7} 429 too_many_requests \u{b7} backed off 800ms, succeeded on retry 2"),
+        },
+    ]
+}
+
+/// Version-history entry (History modal, static demo data): `(label, time, current)`.
+pub const HISTORY_LOG: &[(&str, &str, bool)] = &[
+    ("Applied hero copy & stage glow", "Just now", true),
+    ("Generated 5 sections", "2 min ago", false),
+    ("Project created", "5 min ago", false),
+];
+
+/// The five proposed changes shown in the Review panel (mock `reviewData`).
+pub fn review_items(rtl: bool) -> [(ChipKind, &'static str); 5] {
+    [
+        (ChipKind::Structure, "Added header & sticky nav"),
+        (ChipKind::Structure, "Hero \u{2014} heading, copy & CTAs"),
+        (ChipKind::Text, if rtl { "Wrote Arabic hero copy" } else { "Wrote hero copy" }),
+        (ChipKind::Style, "Blue \u{2192} violet stage glow"),
+        (ChipKind::Structure, "Lineup grid + footer"),
+    ]
 }
 
 // ── Chips, edits, history, activity, messages ───────────────────────────────
@@ -318,67 +680,6 @@ impl ChipKind {
     }
 }
 
-/// The five demo edit knobs the hero proposal toggles (mock `appliedEdits`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditKey {
-    Bigger,
-    Warm,
-    Tint,
-    Reserve,
-    Sub,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AppliedEdits {
-    pub bigger: bool,
-    pub warm: bool,
-    pub tint: bool,
-    pub reserve: bool,
-    pub sub: bool,
-}
-
-impl AppliedEdits {
-    pub fn set(&mut self, key: EditKey, v: bool) {
-        match key {
-            EditKey::Bigger => self.bigger = v,
-            EditKey::Warm => self.warm = v,
-            EditKey::Tint => self.tint = v,
-            EditKey::Reserve => self.reserve = v,
-            EditKey::Sub => self.sub = v,
-        }
-    }
-    /// Serialize as CafeSite dc-import props (query params for the preview).
-    pub fn query(&self) -> String {
-        format!(
-            "bigger={}&warm={}&tint={}&reserve={}&sub={}",
-            self.bigger, self.warm, self.tint, self.reserve, self.sub
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Chip {
-    pub id: u64,
-    pub key: EditKey,
-    pub kind: ChipKind,
-    pub label: SharedString,
-    pub accepted: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct Checkpoint {
-    pub title: SharedString,
-    pub time: SharedString,
-    pub edits: AppliedEdits,
-    pub current: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ActivityItem {
-    pub tone: Tone,
-    pub text: SharedString,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -388,28 +689,511 @@ pub enum Role {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub role: Role,
-    pub tone: Tone,
     pub text: SharedString,
-    pub attachments: Vec<SharedString>,
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Design-system workspace (mock `dsWorkspace`): foundations, a component
+// catalog, and a live-specimen inspector. Ported from `WebFluent Studio.dc.html`.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Which specimen-canvas tab is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsTab {
+    Foundations,
+    Components,
+    Preview,
+}
+impl DsTab {
+    pub const ALL: [DsTab; 3] = [DsTab::Foundations, DsTab::Components, DsTab::Preview];
+    pub fn label(self) -> &'static str {
+        match self {
+            DsTab::Foundations => "Foundations",
+            DsTab::Components => "Components",
+            DsTab::Preview => "Preview",
+        }
+    }
+}
+
+/// What the inspector is editing (mock `state.dsSel.kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsSelKind {
+    Color,
+    Type,
+    Comp,
+}
+
+/// A live design-system selection — a token or component `id`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DsSel {
+    pub kind: DsSelKind,
+    pub id: SharedString,
+}
+
+// ── foundations: color / type / radii tokens (mutable) ──────────────────────
 #[derive(Debug, Clone)]
-pub struct Attachment {
-    pub id: u64,
+pub struct DsColorToken {
+    pub id: SharedString,
     pub name: SharedString,
+    pub val: u32,
+    pub role: SharedString,
+    pub group: SharedString,
 }
 
-/// A live selection on the canvas.
+/// Seed color tokens (mock `state.dsColorTokens`).
+pub fn ds_color_tokens() -> Vec<DsColorToken> {
+    let mk = |id: &'static str, name: &'static str, val: u32, role: &'static str, group: &'static str| DsColorToken {
+        id: id.into(),
+        name: name.into(),
+        val,
+        role: role.into(),
+        group: group.into(),
+    };
+    vec![
+        mk("c-accent", "Accent", 0x93C0F2, "Primary action \u{b7} links", "Brand"),
+        mk("c-violet", "Violet", 0x8A6DF2, "Hero & brand gradient", "Brand"),
+        mk("c-ink", "Ink", 0xF4F6FB, "Primary text", "Neutral"),
+        mk("c-surface", "Surface", 0x14161C, "Panels & cards", "Neutral"),
+        mk("c-base", "Base", 0x0D0E12, "App background", "Neutral"),
+        mk("c-success", "Success", 0x5CCB9A, "Confirmed \u{b7} live", "Semantic"),
+        mk("c-warning", "Warning", 0xE9BE6A, "Self-heal \u{b7} caution", "Semantic"),
+        mk("c-danger", "Danger", 0xEF7A85, "Errors \u{b7} destructive", "Semantic"),
+    ]
+}
+
+/// Group color-token indices by their `group`, preserving first-seen order
+/// (Brand / Neutral / Semantic / any custom group), for the Foundations grid.
+pub fn ds_color_groups(tokens: &[DsColorToken]) -> Vec<(SharedString, Vec<usize>)> {
+    let mut groups: Vec<(SharedString, Vec<usize>)> = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if let Some(g) = groups.iter_mut().find(|(name, _)| name == &t.group) {
+            g.1.push(i);
+        } else {
+            groups.push((t.group.clone(), vec![i]));
+        }
+    }
+    groups
+}
+
+/// The inspector's fixed color palette (swatch picker).
+pub const DS_SWATCHES: &[u32] =
+    &[0x93C0F2, 0x8A6DF2, 0x5CCB9A, 0xE9BE6A, 0xEF7A85, 0x7FB3B0, 0xF4F6FB, 0x9AA3B2];
+
 #[derive(Debug, Clone)]
-pub struct Selection {
-    pub key: &'static str,
+pub struct DsTypeToken {
+    pub id: SharedString,
+    pub name: SharedString,
+    pub family: SharedString,
+    pub size: f32,
+    pub weight: u16,
+    pub tracking: f32,
+    pub sample: SharedString,
+    pub ar: bool,
+}
+impl DsTypeToken {
+    /// The embedded font family this style renders in.
+    pub fn font(&self) -> &'static str {
+        if self.ar {
+            theme::FONT_ARABIC
+        } else if self.family.as_ref() == "Space Grotesk" {
+            theme::FONT_DISPLAY
+        } else {
+            theme::FONT_UI
+        }
+    }
+    pub fn meta_text(&self) -> String {
+        format!("{} \u{b7} {}", self.family, self.weight)
+    }
 }
 
-/// Format minutes-since-midnight as a 12-hour clock, e.g. `10:34 AM`.
-pub fn fmt_clock(minutes: u32) -> String {
-    let h24 = (minutes / 60) % 24;
-    let mm = minutes % 60;
-    let h12 = if h24.is_multiple_of(12) { 12 } else { h24 % 12 };
-    let ampm = if h24 < 12 { "AM" } else { "PM" };
-    format!("{h12}:{mm:02} {ampm}")
+/// Seed type tokens (mock `state.dsTypeTokens`).
+pub fn ds_type_tokens() -> Vec<DsTypeToken> {
+    let mk = |id: &'static str, name: &'static str, family: &'static str, size: f32, weight: u16, tracking: f32, sample: &'static str, ar: bool| DsTypeToken {
+        id: id.into(),
+        name: name.into(),
+        family: family.into(),
+        size,
+        weight,
+        tracking,
+        sample: sample.into(),
+        ar,
+    };
+    vec![
+        mk("t-display", "Display", "Space Grotesk", 40.0, 700, -2.0, "Build by conversation", false),
+        mk("t-title", "Title", "Space Grotesk", 26.0, 600, -1.0, "Choose your provider", false),
+        mk("t-body", "Body", "Manrope", 16.0, 500, 0.0, "Review every change before it ships.", false),
+        mk("t-label", "Label", "Manrope", 12.0, 700, 8.0, "PEOPLE WITH ACCESS", false),
+        mk("t-arabic", "Arabic", "IBM Plex Sans Arabic", 24.0, 600, 0.0, "تعالَ نشرب قهوة سوا", true),
+    ]
+}
+
+/// Font-weight options offered in the type inspector.
+pub const DS_WEIGHTS: &[(u16, &str)] = &[(400, "Reg"), (500, "Med"), (600, "Semi"), (700, "Bold")];
+
+#[derive(Debug, Clone, Copy)]
+pub struct DsRadius {
+    pub name: &'static str,
+    pub val: f32,
+}
+pub const DS_RADII: &[DsRadius] = &[
+    DsRadius { name: "Badge", val: 6.0 },
+    DsRadius { name: "Control", val: 9.0 },
+    DsRadius { name: "Row", val: 11.0 },
+    DsRadius { name: "Card", val: 14.0 },
+    DsRadius { name: "Modal", val: 26.0 },
+];
+
+// ── demo specimen state (mock `state.dsDemo`) ───────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsBtnVariant {
+    Primary,
+    Secondary,
+    Ghost,
+    Soft,
+}
+impl DsBtnVariant {
+    pub const ALL: [DsBtnVariant; 4] = [DsBtnVariant::Primary, DsBtnVariant::Secondary, DsBtnVariant::Ghost, DsBtnVariant::Soft];
+    pub fn label(self) -> &'static str {
+        match self {
+            DsBtnVariant::Primary => "Primary",
+            DsBtnVariant::Secondary => "Secondary",
+            DsBtnVariant::Ghost => "Ghost",
+            DsBtnVariant::Soft => "Soft",
+        }
+    }
+    /// `(fill, foreground, border)` for the specimen.
+    pub fn style(self) -> (Option<Hsla>, Hsla, Option<Hsla>) {
+        match self {
+            DsBtnVariant::Primary => (Some(theme::accent()), theme::accent_contrast(), None),
+            DsBtnVariant::Secondary => (Some(theme::bg_raised()), theme::text_soft(), Some(theme::line_strong())),
+            DsBtnVariant::Ghost => (None, theme::text_soft(), None),
+            DsBtnVariant::Soft => (Some(theme::accent_tint()), theme::accent(), None),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsBtnSize {
+    Sm,
+    Md,
+    Lg,
+}
+impl DsBtnSize {
+    pub const ALL: [DsBtnSize; 3] = [DsBtnSize::Sm, DsBtnSize::Md, DsBtnSize::Lg];
+    pub fn label(self) -> &'static str {
+        match self {
+            DsBtnSize::Sm => "Small",
+            DsBtnSize::Md => "Medium",
+            DsBtnSize::Lg => "Large",
+        }
+    }
+    /// `(height, horizontal pad, text size)`.
+    pub fn metrics(self) -> (f32, f32, f32) {
+        match self {
+            DsBtnSize::Sm => (30.0, 14.0, 12.5),
+            DsBtnSize::Md => (38.0, 18.0, 13.5),
+            DsBtnSize::Lg => (46.0, 22.0, 15.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsChipKind {
+    Accent,
+    Skill,
+    Success,
+    Warning,
+    Danger,
+}
+impl DsChipKind {
+    pub const ALL: [DsChipKind; 5] = [DsChipKind::Accent, DsChipKind::Skill, DsChipKind::Success, DsChipKind::Warning, DsChipKind::Danger];
+    pub fn label(self) -> &'static str {
+        match self {
+            DsChipKind::Accent => "Accent",
+            DsChipKind::Skill => "Skill",
+            DsChipKind::Success => "Success",
+            DsChipKind::Warning => "Warning",
+            DsChipKind::Danger => "Danger",
+        }
+    }
+    /// `(foreground, tinted background)`.
+    pub fn colors(self) -> (Hsla, Hsla) {
+        match self {
+            DsChipKind::Accent => (theme::accent(), theme::accent_tint()),
+            DsChipKind::Skill => (theme::violet_soft(), theme::violet_tint()),
+            DsChipKind::Success => (theme::success(), theme::success_tint()),
+            DsChipKind::Warning => (theme::warning(), theme::warning_tint()),
+            DsChipKind::Danger => (theme::danger(), theme::danger_tint()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsStatusTone {
+    Compiled,
+    Compiling,
+    Idle,
+    Attention,
+    Error,
+}
+impl DsStatusTone {
+    pub const ALL: [DsStatusTone; 5] =
+        [DsStatusTone::Compiled, DsStatusTone::Compiling, DsStatusTone::Idle, DsStatusTone::Attention, DsStatusTone::Error];
+    pub fn label(self) -> &'static str {
+        match self {
+            DsStatusTone::Compiled => "Compiled",
+            DsStatusTone::Compiling => "Compiling",
+            DsStatusTone::Idle => "Idle",
+            DsStatusTone::Attention => "Attention",
+            DsStatusTone::Error => "Error",
+        }
+    }
+    pub fn color(self) -> Hsla {
+        match self {
+            DsStatusTone::Compiled => theme::success(),
+            DsStatusTone::Compiling => theme::accent(),
+            DsStatusTone::Idle => theme::text_muted(),
+            DsStatusTone::Attention => theme::warning(),
+            DsStatusTone::Error => theme::danger(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsAvatarTone {
+    Blue,
+    Violet,
+    Teal,
+    Accent,
+}
+impl DsAvatarTone {
+    pub const ALL: [DsAvatarTone; 4] = [DsAvatarTone::Blue, DsAvatarTone::Violet, DsAvatarTone::Teal, DsAvatarTone::Accent];
+    pub fn label(self) -> &'static str {
+        match self {
+            DsAvatarTone::Blue => "Blue",
+            DsAvatarTone::Violet => "Violet",
+            DsAvatarTone::Teal => "Teal",
+            DsAvatarTone::Accent => "Accent",
+        }
+    }
+    /// `(foreground, tinted background)`.
+    pub fn colors(self) -> (Hsla, Hsla) {
+        match self {
+            DsAvatarTone::Blue => (theme::tone_blue(), theme::hexa(0x7FB0EE24)),
+            DsAvatarTone::Violet => (theme::violet_soft(), theme::violet_tint()),
+            DsAvatarTone::Teal => (theme::tone_teal(), theme::hexa(0x5CCB9A24)),
+            DsAvatarTone::Accent => (theme::accent(), theme::accent_tint()),
+        }
+    }
+}
+
+/// Live-specimen demo state shared by the Components tab and the inspector.
+#[derive(Debug, Clone)]
+pub struct DsDemo {
+    pub button_variant: DsBtnVariant,
+    pub button_size: DsBtnSize,
+    pub button_label: SharedString,
+    pub toggle: bool,
+    pub slider: u8,
+    pub chip_kind: DsChipKind,
+    pub chip_label: SharedString,
+    pub input_ph: SharedString,
+    pub status_tone: DsStatusTone,
+    pub avatar_tone: DsAvatarTone,
+    pub avatar_initials: SharedString,
+    pub tabs_active: u8,
+}
+impl Default for DsDemo {
+    fn default() -> Self {
+        Self {
+            button_variant: DsBtnVariant::Primary,
+            button_size: DsBtnSize::Md,
+            button_label: "Reserve a table".into(),
+            toggle: true,
+            slider: 62,
+            chip_kind: DsChipKind::Accent,
+            chip_label: "Live tonight".into(),
+            input_ph: "you@example.com".into(),
+            status_tone: DsStatusTone::Compiled,
+            avatar_tone: DsAvatarTone::Blue,
+            avatar_initials: "RS".into(),
+            tabs_active: 0,
+        }
+    }
+}
+
+// ── component catalog (mock `dsCompCats`, reconstructed from the template) ───
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsCompKind {
+    // live, editable specimens
+    Button,
+    IconButton,
+    Input,
+    Textarea,
+    Chip,
+    Toggle,
+    Slider,
+    Status,
+    Avatar,
+    Card,
+    Seg,
+    // schematic placeholders (not yet generated)
+    Fab,
+    Link,
+    Select,
+    Checkbox,
+    Radio,
+    Date,
+    Table,
+    List,
+    Navbar,
+    Sidebar,
+    Crumbs,
+    Pager,
+    Accordion,
+    Modal,
+    Toast,
+    Progress,
+    Tooltip,
+    Container,
+    Grid,
+    Stack,
+    Divider,
+    Carousel,
+}
+impl DsCompKind {
+    /// Whether this component renders a live, editable specimen (vs. a
+    /// not-yet-generated schematic placeholder).
+    pub fn ready(self) -> bool {
+        matches!(
+            self,
+            DsCompKind::Button
+                | DsCompKind::IconButton
+                | DsCompKind::Input
+                | DsCompKind::Textarea
+                | DsCompKind::Chip
+                | DsCompKind::Toggle
+                | DsCompKind::Slider
+                | DsCompKind::Status
+                | DsCompKind::Avatar
+                | DsCompKind::Card
+                | DsCompKind::Seg
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DsComp {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub kind: DsCompKind,
+}
+impl DsComp {
+    pub fn ready(&self) -> bool {
+        self.kind.ready()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DsCompCat {
+    pub cat: &'static str,
+    pub items: &'static [DsComp],
+}
+
+use DsCompKind as K;
+pub const DS_CATALOG: &[DsCompCat] = &[
+    DsCompCat {
+        cat: "Actions",
+        items: &[
+            DsComp { id: "button", label: "Button", kind: K::Button },
+            DsComp { id: "iconbtn", label: "Icon button", kind: K::IconButton },
+            DsComp { id: "fab", label: "Floating action", kind: K::Fab },
+            DsComp { id: "link", label: "Link", kind: K::Link },
+        ],
+    },
+    DsCompCat {
+        cat: "Forms",
+        items: &[
+            DsComp { id: "input", label: "Input", kind: K::Input },
+            DsComp { id: "textarea", label: "Textarea", kind: K::Textarea },
+            DsComp { id: "select", label: "Select", kind: K::Select },
+            DsComp { id: "checkbox", label: "Checkbox", kind: K::Checkbox },
+            DsComp { id: "radio", label: "Radio group", kind: K::Radio },
+            DsComp { id: "toggle", label: "Toggle", kind: K::Toggle },
+            DsComp { id: "slider", label: "Slider", kind: K::Slider },
+            DsComp { id: "date", label: "Date picker", kind: K::Date },
+        ],
+    },
+    DsCompCat {
+        cat: "Data display",
+        items: &[
+            DsComp { id: "avatar", label: "Avatar", kind: K::Avatar },
+            DsComp { id: "chip", label: "Chip", kind: K::Chip },
+            DsComp { id: "status", label: "Status pill", kind: K::Status },
+            DsComp { id: "card", label: "Card", kind: K::Card },
+            DsComp { id: "table", label: "Table", kind: K::Table },
+            DsComp { id: "list", label: "List", kind: K::List },
+        ],
+    },
+    DsCompCat {
+        cat: "Navigation",
+        items: &[
+            DsComp { id: "navbar", label: "Navbar", kind: K::Navbar },
+            DsComp { id: "sidebar", label: "Sidebar", kind: K::Sidebar },
+            DsComp { id: "crumbs", label: "Breadcrumbs", kind: K::Crumbs },
+            DsComp { id: "pager", label: "Pagination", kind: K::Pager },
+            DsComp { id: "seg", label: "Tabs", kind: K::Seg },
+            DsComp { id: "accordion", label: "Accordion", kind: K::Accordion },
+        ],
+    },
+    DsCompCat {
+        cat: "Feedback",
+        items: &[
+            DsComp { id: "modal", label: "Modal", kind: K::Modal },
+            DsComp { id: "toast", label: "Toast", kind: K::Toast },
+            DsComp { id: "progress", label: "Progress", kind: K::Progress },
+            DsComp { id: "tooltip", label: "Tooltip", kind: K::Tooltip },
+        ],
+    },
+    DsCompCat {
+        cat: "Layout",
+        items: &[
+            DsComp { id: "container", label: "Container", kind: K::Container },
+            DsComp { id: "grid", label: "Grid", kind: K::Grid },
+            DsComp { id: "stack", label: "Stack", kind: K::Stack },
+            DsComp { id: "divider", label: "Divider", kind: K::Divider },
+            DsComp { id: "carousel", label: "Carousel", kind: K::Carousel },
+        ],
+    },
+];
+
+/// Look up a catalog component by `id`.
+pub fn ds_comp(id: &str) -> Option<&'static DsComp> {
+    DS_CATALOG.iter().flat_map(|c| c.items).find(|c| c.id == id)
+}
+
+/// `(ready, total)` component counts across the catalog.
+pub fn ds_comp_counts() -> (usize, usize) {
+    let all = DS_CATALOG.iter().flat_map(|c| c.items);
+    let total = all.clone().count();
+    let ready = all.filter(|c| c.ready()).count();
+    (ready, total)
+}
+
+/// Planned-variant chips shown for a not-yet-generated component.
+pub fn ds_planned_variants(kind: DsCompKind) -> &'static [&'static str] {
+    match kind {
+        DsCompKind::Select => &["Single", "Multi", "Searchable", "Grouped"],
+        DsCompKind::Checkbox => &["Default", "Indeterminate", "Card", "Disabled"],
+        DsCompKind::Radio => &["Vertical", "Horizontal", "Card", "Disabled"],
+        DsCompKind::Date => &["Single date", "Range", "With time", "Inline"],
+        DsCompKind::Table => &["Simple", "Sortable", "Selectable", "Sticky header"],
+        DsCompKind::List => &["Bulleted", "Icon", "Two-line", "Interactive"],
+        DsCompKind::Navbar => &["Solid", "Transparent", "With search", "Sticky"],
+        DsCompKind::Sidebar => &["Expanded", "Collapsed", "Icon rail", "Nested"],
+        DsCompKind::Modal => &["Dialog", "Sheet", "Confirm", "Fullscreen"],
+        DsCompKind::Toast => &["Success", "Info", "Warning", "Error"],
+        DsCompKind::Progress => &["Linear", "Circular", "Stepped", "Indeterminate"],
+        _ => &["Default", "Compact", "With icon", "Disabled"],
+    }
 }
