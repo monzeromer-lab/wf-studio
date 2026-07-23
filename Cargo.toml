@@ -12,7 +12,9 @@ wf-core = { path = "crates/core" }
 wf-ai = { path = "crates/ai" }
 wf-preview = { path = "crates/preview" }
 
-webfluent = "=0.5.0-alpha"
+# The WebFluent engine — a path dependency during development (Appendix C of
+# spec/STUDIO_INTEGRATION_PLAN.md: separate repos, path-dep for now).
+webfluent = { path = "/run/media/monzer-omer/the good stuff/Work/WebFluent" }
 gpui = "0.2.2"
 gpui-component = { version = "0.5.1", features = ["webview"] }
 wry = { package = "lb-wry", version = "=0.53.3" }

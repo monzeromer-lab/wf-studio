@@ -12,7 +12,10 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+use webfluent::CompiledSite;
 
 use anyhow::Context as _;
 use gpui::{Context, Entity, SharedString, Task, Window, prelude::*};
@@ -24,7 +27,7 @@ use wry::{
 };
 
 use crate::state::*;
-use crate::{ipc, site, ui};
+use crate::{compile, ipc, site, ui};
 
 /// The custom-protocol origin for the preview webview.
 const ORIGIN: &str = "wf://localhost";
@@ -72,6 +75,10 @@ pub struct StudioApp {
     pub applied_ds: Option<SharedString>,
     pub pending_ds: Option<SharedString>,
     pub selection: Vec<SharedString>,
+    /// Real preview selection: the `data-wf-node` ids clicked in the compiled
+    /// site (resolve via `project.resolve_node`). Replaces the mock `selection`
+    /// as M3 wires the inspector to real nodes.
+    pub sel_nodes: Vec<SharedString>,
     pub edits: HashMap<SharedString, ElEdit>,
     pub added_blocks: Vec<BlockType>,
     pub event_order: [usize; 3],
@@ -105,6 +112,11 @@ pub struct StudioApp {
     toast_task: Option<Task<()>>,
     /// The embedded website-preview webview (`None` if the embed failed).
     pub preview: Option<Entity<WebView>>,
+    /// The live WebFluent project: `.wf` sources + the latest compile.
+    project: compile::WfProject,
+    /// The output the `wf://` protocol serves, shared with the serve closure.
+    /// Swapped on recompile, then the webview reloads to pick it up.
+    output: Arc<RwLock<CompiledSite>>,
     pipeline_task: Option<Task<()>>,
     next_id: u64,
 }
@@ -135,9 +147,22 @@ impl StudioApp {
         })
         .detach();
 
+        // Seed the in-memory WebFluent project, compile it, and publish the result
+        // to the shared handle the `wf://` serve closure reads.
+        let project = compile::WfProject::seed();
+        match project.error() {
+            Some(err) => eprintln!("wf-studio: seed project failed to compile: {err}"),
+            None => eprintln!(
+                "wf-studio: seed project compiled ({} page(s), {} nodes)",
+                project.compiled().pages.len(),
+                project.compiled().node_map.len(),
+            ),
+        }
+        let output = Arc::new(RwLock::new(project.compiled().clone()));
+
         // Build the preview webview as a child of the gpui window and keep it
         // hidden until a site is generated.
-        let preview = match build_preview(window) {
+        let preview = match build_preview(window, output.clone()) {
             Ok(webview) => {
                 let entity = cx.new(|cx| WebView::new(webview, window, cx));
                 entity.update(cx, |w, _| w.hide());
@@ -211,6 +236,7 @@ impl StudioApp {
             applied_ds: Some("ds1".into()),
             pending_ds: None,
             selection: Vec::new(),
+            sel_nodes: Vec::new(),
             edits: HashMap::new(),
             added_blocks: Vec::new(),
             event_order: [0, 1, 2],
@@ -241,6 +267,8 @@ impl StudioApp {
             toast_note: None,
             toast_task: None,
             preview,
+            project,
+            output,
             pipeline_task: None,
             next_id: 0,
         }
@@ -275,6 +303,81 @@ impl StudioApp {
     }
 
     /// Push the current canvas state into the (persistent) preview page via
+    /// Recompile the project, publish the new output to the shared serve handle,
+    /// and reload the preview so it shows the result. The AI / inspector edit
+    /// flows drive this in M3; for now it is the manual recompile hook.
+    #[allow(dead_code)] // wired to edit triggers in M3
+    pub fn recompile_and_reload(&mut self, cx: &mut Context<Self>) {
+        self.project.recompile();
+        if let Ok(mut out) = self.output.write() {
+            *out = self.project.compiled().clone();
+        }
+        if let Some(preview) = &self.preview {
+            preview.update(cx, |w, _| {
+                let _ = w.raw().load_url(&format!("{ORIGIN}/{}", site::PREVIEW_ENTRY));
+            });
+        }
+    }
+
+    /// A preview element was clicked (its `data-wf-node` id). Resolve it to code,
+    /// remember the selection, and highlight it in the preview.
+    pub fn select_node(&mut self, node_id: impl Into<SharedString>, additive: bool, cx: &mut Context<Self>) {
+        let id = node_id.into();
+        if additive {
+            if let Some(pos) = self.sel_nodes.iter().position(|k| *k == id) {
+                self.sel_nodes.remove(pos);
+            } else {
+                self.sel_nodes.push(id.clone());
+            }
+        } else {
+            self.sel_nodes = vec![id.clone()];
+        }
+        match self.project.resolve_node(&id) {
+            Some(r) => eprintln!(
+                "wf-studio: selected {id} in {} [{}] -> {}",
+                r.info.component,
+                r.file,
+                r.source_slice.lines().next().unwrap_or("")
+            ),
+            None => eprintln!("wf-studio: selected {id} (not in node map)"),
+        }
+        // Mirror into the mock `selection` so the reused inspector panel renders
+        // for the real node (its controls now emit EditOps — see `set_*`).
+        self.selection = self.sel_nodes.clone();
+        self.highlight_nodes(cx);
+        cx.notify();
+    }
+
+    /// Clear the preview node selection.
+    pub fn deselect_node(&mut self, cx: &mut Context<Self>) {
+        if self.sel_nodes.is_empty() {
+            return;
+        }
+        self.sel_nodes.clear();
+        self.selection.clear();
+        self.highlight_nodes(cx);
+        cx.notify();
+    }
+
+    /// Outline the currently-selected nodes in the preview via `evaluate_script`.
+    fn highlight_nodes(&self, cx: &mut Context<Self>) {
+        let Some(preview) = &self.preview else { return };
+        // JS: clear prior outlines, then outline each selected `data-wf-node`.
+        const HIGHLIGHT_JS: &str = "(function(){\
+          document.querySelectorAll('[data-wf-sel]').forEach(function(e){e.removeAttribute('data-wf-sel');e.style.outline='';e.style.outlineOffset='';});\
+          __IDS__.forEach(function(id){\
+            var el=document.querySelector('[data-wf-node=\"'+id+'\"]');\
+            if(el){el.setAttribute('data-wf-sel','');el.style.outline='2px solid #7C5CFF';el.style.outlineOffset='1px';}\
+          });\
+        })();";
+        let ids: Vec<&str> = self.sel_nodes.iter().map(|s| s.as_ref()).collect();
+        let list = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string());
+        let js = HIGHLIGHT_JS.replace("__IDS__", &list);
+        preview.update(cx, |w, _| {
+            let _ = w.raw().evaluate_script(&js);
+        });
+    }
+
     /// `window.__wfApply(...)` — dir, device, selection, live edits, the review
     /// wipe, and any added blocks. No page reload, so inspector tweaks are live.
     pub fn sync_preview(&self, cx: &mut Context<Self>) {
@@ -523,13 +626,13 @@ impl StudioApp {
     fn apply_ipc(&mut self, events: Vec<ipc::Event>, cx: &mut Context<Self>) {
         for event in events {
             match event {
-                ipc::Event::Select { key, additive } => self.select_el(key, additive, cx),
-                ipc::Event::Deselect => {
-                    if self.generated && !self.busy && !self.selection.is_empty() {
-                        self.deselect(cx);
-                    }
+                ipc::Event::Select { key, additive } => self.select_node(key, additive, cx),
+                ipc::Event::Deselect => self.deselect_node(cx),
+                ipc::Event::PageLoaded => {
+                    // Re-apply the selection outline after a reload cleared it.
+                    self.sync_preview(cx);
+                    self.highlight_nodes(cx);
                 }
-                ipc::Event::PageLoaded => self.sync_preview(cx),
             }
         }
     }
@@ -852,30 +955,40 @@ impl StudioApp {
     }
 
     // ── inspector (live edits) ────────────────────────────────────────────────
-    fn update_edit(&mut self, f: impl Fn(&mut ElEdit), cx: &mut Context<Self>) {
-        for key in self.selection.clone() {
-            f(self.edits.entry(key).or_default());
+    /// Apply structured edits to the currently-selected node, then recompile the
+    /// project and reload the preview — the real "edit by selecting" spine.
+    fn apply_ops(&mut self, ops: Vec<webfluent::EditOp>, cx: &mut Context<Self>) {
+        let Some(id) = self.sel_nodes.first().cloned() else { return };
+        match self.project.edit_node(id.as_ref(), &ops) {
+            Ok(()) => self.recompile_and_reload(cx),
+            Err(e) => eprintln!("wf-studio: edit failed: {e}"),
         }
-        self.sync_preview(cx);
-        cx.notify();
     }
+
+    /// Emit a `SetStyle { prop, value }` edit on the selected node.
+    fn edit_style(&mut self, prop: &str, value: String, cx: &mut Context<Self>) {
+        let Some(id) = self.sel_nodes.first().cloned() else { return };
+        let op = webfluent::EditOp::SetStyle { node: id.to_string(), prop: prop.to_string(), value };
+        self.apply_ops(vec![op], cx);
+    }
+
     pub fn set_color(&mut self, v: SharedString, cx: &mut Context<Self>) {
-        self.update_edit(move |e| e.color = Some(v.clone()), cx);
+        self.edit_style("color", format!("\"{v}\""), cx);
     }
     pub fn set_size(&mut self, v: f32, cx: &mut Context<Self>) {
-        self.update_edit(move |e| e.size = Some(v), cx);
+        self.edit_style("font-size", format!("\"{v}px\""), cx);
     }
     pub fn set_weight(&mut self, v: u16, cx: &mut Context<Self>) {
-        self.update_edit(move |e| e.weight = Some(v), cx);
+        self.edit_style("font-weight", v.to_string(), cx);
     }
     pub fn set_align(&mut self, v: Align, cx: &mut Context<Self>) {
-        self.update_edit(move |e| e.align = Some(v), cx);
+        self.edit_style("text-align", format!("\"{}\"", v.value()), cx);
     }
     pub fn set_bg(&mut self, v: SharedString, cx: &mut Context<Self>) {
-        self.update_edit(move |e| e.bg = Some(v.clone()), cx);
+        self.edit_style("background", format!("\"{v}\""), cx);
     }
     pub fn set_radius(&mut self, v: f32, cx: &mut Context<Self>) {
-        self.update_edit(move |e| e.radius = Some(v), cx);
+        self.edit_style("border-radius", format!("\"{v}px\""), cx);
     }
     pub fn reset_style(&mut self, cx: &mut Context<Self>) {
         for key in self.selection.clone() {
@@ -1198,10 +1311,11 @@ fn pump_gtk() {
     }
 }
 
-/// Build the preview webview as a child of the gpui window, serving `CafeSite`.
-fn build_preview(window: &mut Window) -> anyhow::Result<wry::WebView> {
+/// Build the preview webview as a child of the gpui window, serving the live
+/// [`CompiledSite`] held in `output` over `wf://`.
+fn build_preview(window: &mut Window, output: Arc<RwLock<CompiledSite>>) -> anyhow::Result<wry::WebView> {
     let builder = WebViewBuilder::new()
-        .with_custom_protocol("wf".into(), |_id, request| serve(request))
+        .with_custom_protocol("wf".into(), move |_id, request| serve(request, &output))
         .with_initialization_script(boot_script())
         .with_ipc_handler(|request: Request<String>| ipc::on_message(request.into_body()))
         .with_url(format!("{ORIGIN}/{}", site::PREVIEW_ENTRY));
@@ -1268,15 +1382,78 @@ fn find_gpui_window() -> anyhow::Result<u32> {
     anyhow::bail!("no window found with _NET_WM_PID = {my_pid}")
 }
 
-fn serve(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    match site::resource(request.uri().path()) {
-        Some((mime, bytes)) => Response::builder().status(200).header(CONTENT_TYPE, mime).body(Cow::Borrowed(bytes)).unwrap(),
-        None => Response::builder().status(404).header(CONTENT_TYPE, "text/plain").body(Cow::Borrowed(b"not found".as_slice())).unwrap(),
+const MIME_HTML: &str = "text/html; charset=utf-8";
+const MIME_CSS: &str = "text/css; charset=utf-8";
+const MIME_JS: &str = "application/javascript; charset=utf-8";
+
+/// Serve one `wf://` request from the live compiled site.
+fn serve(request: Request<Vec<u8>>, output: &Arc<RwLock<CompiledSite>>) -> Response<Cow<'static, [u8]>> {
+    let path = request.uri().path().to_string();
+    let found = output.read().ok().and_then(|site| resolve(&site, &path));
+    match found {
+        Some((mime, bytes)) => Response::builder()
+            .status(200)
+            .header(CONTENT_TYPE, mime)
+            .body(Cow::Owned(bytes))
+            .unwrap(),
+        None => Response::builder()
+            .status(404)
+            .header(CONTENT_TYPE, "text/plain")
+            .body(Cow::Owned(b"not found".to_vec()))
+            .unwrap(),
+    }
+}
+
+/// Map a request path to a compiled resource: the stylesheet, the JS bundle, or a
+/// page by route (`/`, `/about`, `about/index.html`, …).
+fn resolve(site: &CompiledSite, path: &str) -> Option<(&'static str, Vec<u8>)> {
+    let p = path.trim_start_matches('/');
+    match p {
+        "styles.css" => Some((MIME_CSS, site.css.clone().into_bytes())),
+        "app.js" => Some((MIME_JS, site.js.clone().into_bytes())),
+        _ => {
+            let route = if p.is_empty() || p == "index.html" {
+                "/".to_string()
+            } else {
+                format!("/{}", p.trim_end_matches("index.html").trim_end_matches('/'))
+            };
+            site.pages
+                .iter()
+                .find(|pg| pg.route == route)
+                .map(|pg| (MIME_HTML, pg.html.clone().into_bytes()))
+        }
     }
 }
 
 fn boot_script() -> String {
-    // The Layali preview is a self-contained vanilla page, so the only thing we
-    // inject is the click/lifecycle bridge (state is pushed in via __wfApply).
+    // Inject the click/lifecycle bridge before the compiled site's own scripts.
+    // (M3 repoints the bridge from `data-wf-el` to Slice-2's `data-wf-node`.)
     ipc::BRIDGE_JS.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::compile_source;
+
+    #[test]
+    fn resolve_serves_compiled_page_css_and_js() {
+        let site = compile_source("Page Home (path: \"/\") { Container { Text(\"hi\") } }").unwrap();
+
+        // "/" and index.html resolve to the home page HTML with node-id stamps.
+        for path in ["/", "/index.html", "index.html"] {
+            let (mime, bytes) = resolve(&site, path).unwrap_or_else(|| panic!("no page for {path}"));
+            assert_eq!(mime, MIME_HTML);
+            assert!(String::from_utf8(bytes).unwrap().contains("data-wf-node="), "{path}: no stamps");
+        }
+
+        // Stylesheet + JS bundle by their conventional paths.
+        assert_eq!(resolve(&site, "/styles.css").unwrap().0, MIME_CSS);
+        let (js_mime, js) = resolve(&site, "/app.js").unwrap();
+        assert_eq!(js_mime, MIME_JS);
+        assert!(String::from_utf8(js).unwrap().contains("data-wf-node"));
+
+        // Unknown path → 404 (None).
+        assert!(resolve(&site, "/nope.txt").is_none());
+    }
 }

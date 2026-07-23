@@ -1,22 +1,9 @@
-//! The website **preview**, served to the canvas webview over `wf://`.
+//! The preview webview's entry path.
 //!
-//! The Studio chrome is native GPUI — only the generated site (the cinematic
-//! "Layali" rooftop-venue demo) renders in the webview. It's a self-contained
-//! vanilla page (no framework, no network): the backend pushes state into it
-//! with `window.__wfApply(state)` over `evaluate_script`, and it reports canvas
-//! clicks back over the IPC bridge (see [`crate::ipc`]).
+//! The document is no longer a static mock — it's the **live compiled site**,
+//! served over `wf://` from the project's [`webfluent::CompiledSite`] (see
+//! `app::serve` / `app::resolve`). The old hand-written `layali.html` mock is
+//! retired (the file remains under `preview/` for reference but is unused).
 
-/// The document the preview webview boots.
+/// The document the preview webview boots; `serve` resolves it to the `/` page.
 pub const PREVIEW_ENTRY: &str = "index.html";
-
-const LAYALI_HTML: &[u8] = include_bytes!("preview/layali.html");
-
-const HTML: &str = "text/html; charset=utf-8";
-
-/// Resolve a request path to `(mime, bytes)`, or `None` for a 404.
-pub fn resource(path: &str) -> Option<(&'static str, &'static [u8])> {
-    Some(match path.trim_start_matches('/') {
-        "" | "index.html" => (HTML, LAYALI_HTML),
-        _ => return None,
-    })
-}

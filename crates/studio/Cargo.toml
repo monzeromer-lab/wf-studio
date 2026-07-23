@@ -9,6 +9,7 @@ name = "wf-studio"
 path = "src/main.rs"
 
 [dependencies]
+webfluent.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 wry.workspace = true

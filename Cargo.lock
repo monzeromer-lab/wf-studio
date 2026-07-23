@@ -8111,8 +8111,6 @@ dependencies = [
 [[package]]
 name = "webfluent"
 version = "0.5.0-alpha"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d53db731f6315c936848f90e8f76020e39b12f0c7d7a9d7c473c2d6a5ebc8c58"
 dependencies = [
  "clap",
  "serde",
@@ -8259,6 +8257,7 @@ dependencies = [
  "lb-wry",
  "raw-window-handle",
  "serde_json",
+ "webfluent",
  "x11rb",
 ]
 

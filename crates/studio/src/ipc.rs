@@ -25,15 +25,15 @@ pub const BRIDGE_JS: &str = r#"
   });
   window.addEventListener('DOMContentLoaded', function () { post('page-loaded', {}); });
 
-  // Click-to-select: report every `data-wf-el` ancestor of the clicked element,
-  // innermost first, plus whether an additive modifier was held. An empty list
-  // (a click on bare page) clears the selection. The backend owns the selection
-  // and pushes the resulting highlight back via `__wfApply`.
+  // Click-to-select: report every `data-wf-node` ancestor of the clicked element
+  // (Slice-2 node ids), innermost first, plus whether an additive modifier was
+  // held. An empty list (a click on bare page) clears the selection. The backend
+  // resolves the id to source via the node map and highlights the element.
   document.addEventListener('click', function (e) {
     var keys = [];
     var el = e.target;
     while (el && el.getAttribute) {
-      if (el.hasAttribute('data-wf-el')) keys.push(el.getAttribute('data-wf-el'));
+      if (el.hasAttribute('data-wf-node')) keys.push(el.getAttribute('data-wf-node'));
       el = el.parentElement;
     }
     post('select', { keys: keys, shift: !!(e.shiftKey || e.metaKey || e.ctrlKey) });
