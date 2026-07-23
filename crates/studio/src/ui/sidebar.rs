@@ -6,7 +6,7 @@ use gpui::{App, ClickEvent, Context, Hsla, SharedString, Window, div, prelude::*
 use gpui_component::{StyledExt, h_flex, v_flex};
 
 use crate::app::StudioApp;
-use crate::state::{Align, BlockType, ChipKind, Dir, ElKind, OUTLINE_GROUPS, RightMode, element, review_items};
+use crate::state::{Align, BlockType, ChipKind, Dir, ElKind, RightMode, review_items};
 use crate::theme;
 use crate::ui::widgets::{Btn, icon};
 
@@ -183,6 +183,21 @@ fn multi(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
 
 // ── Outline (idle, built) ────────────────────────────────────────────────────
 fn outline(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    // Flatten the live element tree into indented rows (innermost nesting = depth).
+    let mut rows: Vec<(usize, String, String)> = Vec::new();
+    flatten_outline(&app.outline(), 0, &mut rows);
+    let tree = if rows.is_empty() {
+        div()
+            .text_size(px(12.0))
+            .text_color(theme::text_faint())
+            .child("No elements on this page yet.")
+            .into_any_element()
+    } else {
+        v_flex()
+            .gap(px(2.0))
+            .children(rows.into_iter().map(|(depth, id, label)| outline_row(app, depth, id, label, cx)))
+            .into_any_element()
+    };
     v_flex()
         .flex_1()
         .min_h_0()
@@ -209,7 +224,7 @@ fn outline(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
                 .px(px(16.0))
                 .py(px(14.0))
                 .child(div().text_size(px(12.0)).text_color(theme::text_caption()).line_height(px(18.0)).mb(px(12.0)).child("Click any element to edit it. Shift-click to select several at once."))
-                .child(v_flex().gap(px(2.0)).children(OUTLINE_GROUPS.iter().map(|(id, label, keys)| outline_group(app, id, label, keys, cx))))
+                .child(tree)
                 .child(
                     v_flex()
                         .mt(px(16.0))
@@ -228,47 +243,37 @@ fn outline(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
         )
 }
 
-fn outline_group(app: &StudioApp, id: &'static str, label: &'static str, keys: &'static [&'static str], cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
-    let open = app.outline_open(id);
-    let mut group = v_flex().child(
-        h_flex()
-            .id(SharedString::from(format!("olg-{id}")))
-            .items_center()
-            .gap(px(8.0))
-            .px(px(10.0))
-            .py(px(9.0))
-            .rounded(px(theme::RADIUS_MD))
-            .text_color(theme::text_soft())
-            .cursor_pointer()
-            .hover(|s| s.bg(theme::bg_raised()).text_color(theme::text_strong()))
-            .child(icon(if open { "chevron-down" } else { "chevron-right" }, 14.0, theme::text_caption()))
-            .child(div().flex_1().text_size(px(12.5)).font_semibold().child(label))
-            .child(div().text_size(px(10.5)).text_color(theme::text_faint()).child(format!("{}", keys.len())))
-            .on_click(cx.listener(move |a, _, _, cx| a.toggle_outline_group(id, cx))),
-    );
-    if open {
-        group = group.child(v_flex().children(keys.iter().map(|k| {
-            let key = *k;
-            let meta = element(key);
-            let (ic, lbl) = meta.map(|m| (m.icon, m.label)).unwrap_or(("target", key));
-            h_flex()
-                .id(SharedString::from(format!("olf-{key}")))
-                .items_center()
-                .gap(px(10.0))
-                .pl(px(32.0))
-                .pr(px(12.0))
-                .py(px(8.0))
-                .rounded(px(theme::RADIUS_MD))
-                .text_size(px(12.5))
-                .text_color(theme::text_muted())
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::bg_raised()).text_color(theme::text_strong()))
-                .child(icon(ic, 14.0, theme::text_caption()))
-                .child(lbl)
-                .on_click(cx.listener(move |a, ev: &gpui::ClickEvent, _, cx| a.select_el(key, ev.modifiers().shift, cx)))
-        })));
+/// Depth-first flatten of the outline tree into `(depth, id, label)` rows.
+fn flatten_outline(nodes: &[crate::compile::OutlineNode], depth: usize, out: &mut Vec<(usize, String, String)>) {
+    for n in nodes {
+        out.push((depth, n.id.clone(), n.label.clone()));
+        flatten_outline(&n.children, depth + 1, out);
     }
-    group
+}
+
+/// One outline row: an indented, clickable element label that selects the real
+/// preview node (shift-click adds to the selection).
+fn outline_row(app: &StudioApp, depth: usize, id: String, label: String, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
+    let selected = app.node_selected(&id);
+    let indent = 10.0 + depth as f32 * 16.0;
+    let row_id = SharedString::from(format!("ol-{id}"));
+    let target = id;
+    h_flex()
+        .id(row_id)
+        .items_center()
+        .gap(px(10.0))
+        .pl(px(indent))
+        .pr(px(12.0))
+        .py(px(8.0))
+        .rounded(px(theme::RADIUS_MD))
+        .text_size(px(12.5))
+        .text_color(if selected { theme::text_strong() } else { theme::text_muted() })
+        .when(selected, |s| s.bg(theme::bg_raised()))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::bg_raised()).text_color(theme::text_strong()))
+        .child(icon("target", 14.0, theme::text_caption()))
+        .child(div().flex_1().child(label))
+        .on_click(cx.listener(move |a, ev: &gpui::ClickEvent, _, cx| a.select_node(target.clone(), ev.modifiers().shift, cx)))
 }
 
 fn add_btn(id: &'static str, ic: &'static str, label: &'static str, kind: BlockType, cx: &mut Context<StudioApp>) -> impl IntoElement {

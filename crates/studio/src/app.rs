@@ -84,7 +84,6 @@ pub struct StudioApp {
     pub event_order: [usize; 3],
     pub keeps: [bool; 5],
     pub review_split: f32,
-    pub outline_collapsed: Vec<SharedString>,
     pub compile_step: u8,
     // ── design-system workspace: tabs, tokens, live specimens ───────────────
     pub ds_tab: DsTab,
@@ -242,7 +241,6 @@ impl StudioApp {
             event_order: [0, 1, 2],
             keeps: [true; 5],
             review_split: 50.0,
-            outline_collapsed: Vec::new(),
             compile_step: 0,
             ds_tab: DsTab::Foundations,
             ds_sel: None,
@@ -357,6 +355,16 @@ impl StudioApp {
         self.selection.clear();
         self.highlight_nodes(cx);
         cx.notify();
+    }
+
+    /// The page element tree for the outline panel, derived from the live compile.
+    pub fn outline(&self) -> Vec<crate::compile::OutlineNode> {
+        self.project.outline()
+    }
+
+    /// Whether a preview node id is in the current selection (drives outline row highlight).
+    pub fn node_selected(&self, id: &str) -> bool {
+        self.sel_nodes.iter().any(|s| s.as_ref() == id)
     }
 
     /// Outline the currently-selected nodes in the preview via `evaluate_script`.
@@ -896,27 +904,6 @@ impl StudioApp {
     }
 
     // ── selection ─────────────────────────────────────────────────────────────
-    pub fn select_el(&mut self, key: impl Into<SharedString>, additive: bool, cx: &mut Context<Self>) {
-        if !self.generated || self.busy {
-            return;
-        }
-        let key = key.into();
-        if additive {
-            if let Some(pos) = self.selection.iter().position(|k| *k == key) {
-                self.selection.remove(pos);
-            } else {
-                self.selection.push(key);
-            }
-        } else {
-            self.selection = vec![key];
-        }
-        if self.review_open {
-            self.review_open = false;
-        }
-        self.chat_menu = None;
-        self.sync_preview(cx);
-        cx.notify();
-    }
     pub fn deselect(&mut self, cx: &mut Context<Self>) {
         self.selection.clear();
         self.sync_preview(cx);
@@ -1002,29 +989,23 @@ impl StudioApp {
     }
 
     // ── outline / blocks ──────────────────────────────────────────────────────
-    pub fn toggle_outline_group(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(pos) = self.outline_collapsed.iter().position(|g| g.as_ref() == id) {
-            self.outline_collapsed.remove(pos);
-        } else {
-            self.outline_collapsed.push(id.to_string().into());
-        }
-        cx.notify();
-    }
-    pub fn outline_open(&self, id: &str) -> bool {
-        !self.outline_collapsed.iter().any(|g| g.as_ref() == id)
-    }
     pub fn add_block(&mut self, kind: BlockType, cx: &mut Context<Self>) {
-        let idx = self.added_blocks.len();
-        self.added_blocks.push(kind);
-        self.selection = vec![format!("add{idx}").into()];
-        self.panel_open = true;
-        self.sync_preview(cx);
-        let label = match kind {
-            BlockType::Text => "text block",
-            BlockType::Image => "image",
-            BlockType::Button => "button",
+        // Append the block as a child of the selected element (a real AppendChild
+        // edit → recompile → reload).
+        let Some(target) = self.sel_nodes.first().cloned() else {
+            self.show_toast(ToastTone::Idle, "Select an element first, then add a block into it.", cx);
+            return;
         };
-        self.show_toast(ToastTone::Success, format!("Added a {label} \u{2014} now selected. Edit it in the inspector."), cx);
+        let (wf, label) = match kind {
+            BlockType::Text => ("Text(\"New text\")", "text block"),
+            BlockType::Image => ("Image(src: \"/placeholder.png\")", "image"),
+            BlockType::Button => ("Button(\"Button\", primary)", "button"),
+        };
+        self.apply_ops(
+            vec![webfluent::EditOp::AppendChild { node: target.to_string(), wf: wf.to_string() }],
+            cx,
+        );
+        self.show_toast(ToastTone::Success, format!("Added a {label}."), cx);
         cx.notify();
     }
 

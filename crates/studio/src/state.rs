@@ -372,14 +372,6 @@ pub fn element(key: &str) -> Option<&'static ElMeta> {
     ELEMENTS.iter().find(|e| e.key == key)
 }
 
-/// The outline groups (mock `groupsDef`): `(id, label, [element keys])`.
-pub const OUTLINE_GROUPS: &[(&str, &str, &[&str])] = &[
-    ("header", "Header", &["brand", "nav", "headerCta"]),
-    ("hero", "Hero section", &["eyebrow", "heading", "sub", "cta", "cta2", "visual"]),
-    ("lineup", "Lineup grid", &["lineupTitle", "visual"]),
-    ("footer", "Footer", &["footer"]),
-];
-
 // ── Live style edits (inspector) ────────────────────────────────────────────
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {

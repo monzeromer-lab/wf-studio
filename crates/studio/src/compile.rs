@@ -90,6 +90,30 @@ pub struct ResolvedNode<'a> {
     pub source_slice: String,
 }
 
+/// A node in the page outline: its id, a short label (the element name), and its
+/// children, forming the tree the outline panel renders.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlineNode {
+    pub id: String,
+    pub label: String,
+    pub children: Vec<OutlineNode>,
+}
+
+/// Build outline subtrees for `ids` from the child + label lookups.
+fn build_outline(
+    ids: &[String],
+    children: &std::collections::HashMap<String, Vec<String>>,
+    labels: &std::collections::HashMap<String, String>,
+) -> Vec<OutlineNode> {
+    ids.iter()
+        .map(|id| OutlineNode {
+            id: id.clone(),
+            label: labels.get(id).cloned().unwrap_or_default(),
+            children: children.get(id).map(|c| build_outline(c, children, labels)).unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// An in-memory WebFluent project: `.wf` sources plus the latest compile output.
 ///
 /// On a failed recompile the previous good [`CompiledSite`] is kept, so the
@@ -163,6 +187,57 @@ impl WfProject {
         let edited = apply_edits(&src, ops).map_err(|e| anyhow::anyhow!("{e}"))?;
         self.sources.insert(file, edited);
         Ok(())
+    }
+
+    /// The page's element tree, derived from the node map — the source for the
+    /// outline panel. Each node's label is its leading source token (the element
+    /// name); control-flow scaffolding (`if`/`for` branches) is transparent, so a
+    /// node attaches to its nearest rendered ancestor.
+    pub fn outline(&self) -> Vec<OutlineNode> {
+        use std::collections::{HashMap, HashSet};
+
+        let mut labels: HashMap<String, String> = HashMap::new();
+        let mut ids: Vec<String> = Vec::new();
+        for (id, info) in self.compiled.node_map.iter() {
+            let label = info
+                .span
+                .slice(&self.merged)
+                .split(|c: char| c == '(' || c == ' ' || c == '{' || c == '\n')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            labels.insert(id.clone(), label);
+            ids.push(id.clone());
+        }
+        ids.sort();
+        let idset: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+
+        // A node's parent is the nearest ancestor id that is itself a node —
+        // stripping trailing `.seg`/`:seg` (skipping non-node branch scaffolding).
+        let parent_of = |id: &str| -> Option<String> {
+            let mut cur = id;
+            while let Some(pos) = cur.rfind(|c| c == '.' || c == ':') {
+                let cand = &cur[..pos];
+                if cand.is_empty() {
+                    return None;
+                }
+                if idset.contains(cand) {
+                    return Some(cand.to_string());
+                }
+                cur = cand;
+            }
+            None
+        };
+
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        let mut roots: Vec<String> = Vec::new();
+        for id in &ids {
+            match parent_of(id) {
+                Some(p) => children.entry(p).or_default().push(id.clone()),
+                None => roots.push(id.clone()),
+            }
+        }
+        build_outline(&roots, &children, &labels)
     }
 
     /// Recompile from the current sources. Keeps the last good compile on error.
@@ -279,6 +354,32 @@ mod tests {
         p.recompile();
         assert!(p.error().is_none());
         assert!(p.sources.get("src/pages/Home.wf").unwrap().contains("color: \"#ff0000\""));
+    }
+
+    #[test]
+    fn outline_reflects_the_node_tree() {
+        let p = WfProject::seed();
+        let tree = p.outline();
+        assert_eq!(tree.len(), 1, "one root (the Container)");
+        assert_eq!(tree[0].label, "Container");
+        let labels: Vec<&str> = tree[0].children.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Heading", "Text", "Button"]);
+    }
+
+    #[test]
+    fn append_child_adds_a_block_and_grows_the_outline() {
+        let mut p = WfProject::seed();
+        let container = p.compiled().node_map.iter()
+            .find(|(_, i)| i.span.slice(&p.merged).starts_with("Container"))
+            .map(|(id, _)| id.clone())
+            .expect("Container node");
+        assert_eq!(p.outline()[0].children.len(), 3);
+
+        p.edit_node(&container, &[EditOp::AppendChild { node: container.clone(), wf: "Button(\"New\")".into() }]).unwrap();
+        p.recompile();
+        assert!(p.error().is_none());
+        assert!(p.compiled().pages[0].html.contains(">New<"));
+        assert_eq!(p.outline()[0].children.len(), 4, "outline gains the appended child");
     }
 
     #[test]
