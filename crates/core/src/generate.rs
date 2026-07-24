@@ -11,9 +11,10 @@
 //! the studio runs [`generate_page`] off the UI thread. Deterministically testable
 //! against [`wf_ai::ScriptedProvider`].
 
-use wf_ai::{collect_text, ChatMessage, ChatRequest, Provider};
+use wf_ai::{collect_text, ChatMessage, ChatRequest, Provider, LANGUAGE_CARD};
+use webfluent::{apply_edits, EditOp};
 
-use crate::compile_source;
+use crate::{compile_merged, compile_source};
 
 /// Per-request generation knobs.
 #[derive(Debug, Clone)]
@@ -98,6 +99,80 @@ pub fn generate_page(
                 messages.push(ChatMessage::user(format!(
                     "That WebFluent did not compile:\n{last_error}\n\
                      Return the corrected, complete page in a single ```wf code block.",
+                )));
+            }
+        }
+    }
+}
+
+/// A successful scoped edit: the new full source (base with the node replaced),
+/// and how many model calls it took.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditOutcome {
+    pub source: String,
+    pub attempts: usize,
+}
+
+/// Edit one selected element by instruction: show the model the element's current
+/// source, take its replacement, splice it back in place of that node, and
+/// validate the whole page — re-prompting with the diagnostic on failure. The
+/// model only ever sees the selected element (context pruning, §4.3/NFR-2), never
+/// the whole file, and can only change that node's span (scoped-edit containment).
+pub fn edit_node(
+    provider: &dyn Provider,
+    base_source: &str,
+    node_id: &str,
+    instruction: &str,
+    config: &GenConfig,
+) -> Result<EditOutcome, GenError> {
+    // The base must compile so we can resolve the selected node's current source.
+    let (site, merged, _ranges) = compile_merged([("<edit>", base_source)])
+        .map_err(|e| GenError::Provider(format!("the page must compile before editing: {e}")))?;
+    let info = site
+        .node_map
+        .info(node_id)
+        .ok_or_else(|| GenError::Provider(format!("unknown node {node_id}")))?;
+    let node_src = info.span.slice(&merged).to_string();
+
+    let system = format!(
+        "{LANGUAGE_CARD}\n\n# EDIT MODE\nYou are editing ONE existing element inside a page. \
+         Return ONLY the replacement for that element — a single WebFluent element (with its \
+         children and style, if any) — inside one ```wf block. Do NOT wrap it in a Page or \
+         Component, and do NOT change anything the request did not ask you to."
+    );
+    let mut messages = vec![
+        ChatMessage::system(system),
+        ChatMessage::user(format!("Current element:\n```wf\n{node_src}\n```\n\nEdit request: {instruction}")),
+    ];
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        let request = ChatRequest {
+            model: config.model.clone(),
+            messages: messages.clone(),
+            max_tokens: config.max_tokens,
+        };
+        let reply = collect_text(provider.stream_chat(request)).map_err(GenError::Provider)?;
+        let replacement = extract_wf(&reply).ok_or(GenError::NoWfBlock)?;
+
+        // Splice the replacement in place of the node (a scoped span edit), then
+        // validate the whole page. Both the reparse-guard and the semantic gate
+        // are compiler diagnostics we feed back for a repair.
+        let spliced = apply_edits(base_source, &[EditOp::ReplaceNode { node: node_id.to_string(), wf: replacement }])
+            .map_err(|e| e.to_string())
+            .and_then(|s| compile_source(&s).map(|_| s).map_err(|e| e.to_string()));
+
+        match spliced {
+            Ok(source) => return Ok(EditOutcome { source, attempts }),
+            Err(last_error) => {
+                if attempts >= config.max_attempts {
+                    return Err(GenError::Unrepaired { last_error, attempts });
+                }
+                messages.push(ChatMessage::assistant(reply));
+                messages.push(ChatMessage::user(format!(
+                    "That replacement did not work: {last_error}\n\
+                     Return a corrected single element in one ```wf block.",
                 )));
             }
         }
@@ -204,5 +279,54 @@ mod tests {
     #[test]
     fn extract_rejects_prose() {
         assert_eq!(extract_wf("I'm not sure what you mean."), None);
+    }
+
+    // ── scoped edit (M3.1) ────────────────────────────────────────────────────
+    const BASE: &str = "Page Home (path: \"/\") { Container { Heading(\"Hi\", h1) } }";
+
+    fn heading_id(src: &str) -> String {
+        let (site, merged, _) = crate::compile_merged([("<t>", src)]).unwrap();
+        site.node_map
+            .iter()
+            .find(|(_, i)| i.span.slice(&merged).starts_with("Heading"))
+            .map(|(id, _)| id.clone())
+            .expect("a Heading node")
+    }
+
+    #[test]
+    fn edit_node_applies_a_valid_replacement() {
+        let id = heading_id(BASE);
+        let p = ScriptedProvider::with_text("```wf\nHeading(\"Hi\", h1, large)\n```");
+        let out = edit_node(&p, BASE, &id, "make the heading large", &cfg()).unwrap();
+        assert_eq!(out.attempts, 1);
+        assert!(out.source.contains("large"), "the edit landed");
+        assert!(out.source.contains("Container"), "the rest of the page is preserved");
+    }
+
+    #[test]
+    fn edit_node_repairs_a_bad_replacement() {
+        let id = heading_id(BASE);
+        let p = ScriptedProvider::new(ProviderKind::Anthropic);
+        // Ghost() parses but is an undeclared component → the gate rejects it → repair.
+        p.push_text("```wf\nGhost()\n```").push_text("```wf\nHeading(\"Hi\", h2)\n```");
+        let out = edit_node(&p, BASE, &id, "smaller heading", &cfg()).unwrap();
+        assert_eq!(out.attempts, 2);
+        assert!(out.source.contains("h2"));
+    }
+
+    #[test]
+    fn edit_node_gives_up_after_max_attempts() {
+        let id = heading_id(BASE);
+        let p = ScriptedProvider::new(ProviderKind::Anthropic);
+        p.push_text("```wf\nGhost()\n```")
+            .push_text("```wf\nGhost()\n```")
+            .push_text("```wf\nGhost()\n```");
+        assert!(matches!(edit_node(&p, BASE, &id, "x", &cfg()), Err(GenError::Unrepaired { .. })));
+    }
+
+    #[test]
+    fn edit_node_rejects_an_unknown_node() {
+        let p = ScriptedProvider::with_text("```wf\nText(\"x\")\n```");
+        assert!(edit_node(&p, BASE, "Nope:9", "x", &cfg()).is_err());
     }
 }

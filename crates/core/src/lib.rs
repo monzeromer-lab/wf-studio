@@ -8,7 +8,7 @@ mod generate;
 mod project;
 
 pub use artifacts::{Artifact, Artifacts};
-pub use generate::{generate_page, GenConfig, GenError, GenOutcome};
+pub use generate::{edit_node, generate_page, EditOutcome, GenConfig, GenError, GenOutcome};
 pub use project::{compile_merged, compile_source, FileRange, OutlineNode, ResolvedNode, WfProject};
 
 // Re-export the engine's compiled-output types so downstream crates (preview,
