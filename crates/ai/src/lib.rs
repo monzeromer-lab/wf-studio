@@ -11,6 +11,7 @@
 
 mod anthropic;
 mod openai;
+mod scripted;
 mod sse;
 mod stream;
 
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 pub use anthropic::AnthropicAdapter;
 pub use openai::OpenAiCompatAdapter;
+pub use scripted::ScriptedProvider;
 
 /// The six launch providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,5 +159,22 @@ pub fn provider_for(kind: ProviderKind, api_key: String) -> Box<dyn Provider> {
     match kind.wire() {
         Wire::Anthropic => Box::new(AnthropicAdapter::new(api_key)),
         Wire::OpenAi => Box::new(OpenAiCompatAdapter::new(kind, api_key)),
+    }
+}
+
+/// Drain a chat stream to its full text (concatenated [`ChatDelta::Text`]), or the
+/// first [`ChatDelta::Error`]. Blocks the calling thread until the stream ends, so
+/// run it off the UI thread — the stream itself is driven on its own thread (see
+/// [`stream`]). A stream that closes without an explicit terminal delta yields the
+/// text accumulated so far.
+pub fn collect_text(rx: async_channel::Receiver<ChatDelta>) -> Result<String, String> {
+    let mut out = String::new();
+    loop {
+        match rx.recv_blocking() {
+            Ok(ChatDelta::Text(t)) => out.push_str(&t),
+            Ok(ChatDelta::Done) => return Ok(out),
+            Ok(ChatDelta::Error(e)) => return Err(e),
+            Err(_) => return Ok(out), // channel closed without a terminal delta
+        }
     }
 }
