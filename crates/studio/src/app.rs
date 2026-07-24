@@ -64,6 +64,8 @@ pub struct StudioApp {
     pub new_type: ProjectKind,
     pub modal: Option<Modal>,
     pub conn_mode: ConnMode,
+    pub conn_test: ConnTest,
+    conn_task: Option<Task<()>>,
     pub acp_url: Entity<InputState>,
     pub acp_connected: bool,
     // ── workspace: composer, selection, inspector, review, blocks ───────────
@@ -238,6 +240,8 @@ impl StudioApp {
             new_type: ProjectKind::Website,
             modal: None,
             conn_mode: ConnMode::Key,
+            conn_test: ConnTest::Untested,
+            conn_task: None,
             acp_url,
             acp_connected: false,
             chat_open: true,
@@ -336,6 +340,47 @@ impl StudioApp {
         if let Err(e) = self.keys.set(self.provider_kind(), key) {
             eprintln!("wf-studio: could not save API key to the keychain: {e}");
         }
+    }
+
+    /// Validate the current key with a minimal live request to the provider.
+    pub fn test_connection(&mut self, cx: &mut Context<Self>) {
+        if self.conn_test == ConnTest::Testing {
+            return;
+        }
+        let key = self.key_text(cx).trim().to_string();
+        if key.is_empty() {
+            self.conn_test = ConnTest::Failed("Add a key first.".into());
+            cx.notify();
+            return;
+        }
+        self.save_current_key(cx);
+        let kind = self.provider_kind();
+        let model = kind.default_model().to_string();
+        let provider = wf_ai::provider_for(kind, key);
+        self.conn_test = ConnTest::Testing;
+        cx.notify();
+
+        self.conn_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let req = wf_ai::ChatRequest {
+                        model,
+                        messages: vec![wf_ai::ChatMessage::user("Reply with the single word: OK")],
+                        max_tokens: 16,
+                    };
+                    wf_ai::collect_text(provider.stream_chat(req))
+                })
+                .await;
+            let _ = this.update(cx, |a, cx| {
+                a.conn_test = match result {
+                    Ok(text) if !text.trim().is_empty() => ConnTest::Ok,
+                    Ok(_) => ConnTest::Failed("The provider returned an empty response.".into()),
+                    Err(e) => ConnTest::Failed(friendly(e)),
+                };
+                cx.notify();
+            });
+        }));
     }
     // ── chat / activity / history ───────────────────────────────────────────
     fn push_msg(&mut self, role: Role, text: impl Into<SharedString>) {
@@ -509,6 +554,7 @@ impl StudioApp {
         // provider's saved key into the field (empty if none).
         self.save_current_key(cx);
         self.provider = id;
+        self.conn_test = ConnTest::Untested;
         let loaded = self.keys.get(self.provider_kind()).unwrap_or_default();
         self.api_key.update(cx, |s, cx| s.set_value(loaded, window, cx));
         cx.notify();
@@ -641,6 +687,7 @@ impl StudioApp {
     // ── onboarding (cinematic) ───────────────────────────────────────────────
     pub fn set_conn_mode(&mut self, m: ConnMode, cx: &mut Context<Self>) {
         self.conn_mode = m;
+        self.conn_test = ConnTest::Untested;
         cx.notify();
     }
     pub fn goto_step(&mut self, i: u8, cx: &mut Context<Self>) {
@@ -677,7 +724,12 @@ impl StudioApp {
             "product" => "A launch page for a new product with a hero, features and pricing.",
             _ => "",
         };
-        self.enter_workspace(preset, window, cx);
+        // Enter the workspace and generate the sample straight away (Flow-A:
+        // cold start → sample prompt → live preview).
+        self.enter_workspace("", window, cx);
+        if !preset.is_empty() {
+            self.build(preset.to_string(), window, cx);
+        }
     }
 
     // ── toolbar ─────────────────────────────────────────────────────────────

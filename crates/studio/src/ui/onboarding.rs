@@ -5,7 +5,7 @@ use gpui::{App, ClickEvent, Context, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, input::Input, v_flex};
 
 use crate::app::StudioApp;
-use crate::state::{ConnMode, PROVIDERS};
+use crate::state::{ConnMode, ConnTest, PROVIDERS};
 use crate::theme;
 use crate::ui::widgets::{Btn, icon, provider_card};
 
@@ -227,6 +227,7 @@ fn step_key(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
         body = body
             .child(subtitle("Paste your API key. It\u{2019}s saved to your operating system\u{2019}s secure store and never leaves this device."))
             .child(field_row("lock", Input::new(&app.api_key).appearance(false).text_size(px(14.0))))
+            .child(test_conn_row(app, cx))
             .child(
                 h_flex()
                     .mt(px(13.0))
@@ -246,6 +247,24 @@ fn step_key(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
             .child(nav_row(!ready, cx));
     }
     body
+}
+
+/// "Test connection" — a live minimal call to the provider, with its result.
+fn test_conn_row(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    let indicator: Option<(gpui::Hsla, gpui::SharedString)> = match &app.conn_test {
+        ConnTest::Untested => None,
+        ConnTest::Testing => Some((theme::accent(), "Testing\u{2026}".into())),
+        ConnTest::Ok => Some((theme::success(), "Connected".into())),
+        ConnTest::Failed(e) => Some((theme::danger(), gpui::SharedString::from(e.clone()))),
+    };
+    h_flex()
+        .mt(px(12.0))
+        .items_center()
+        .gap(px(10.0))
+        .child(Btn::secondary("Test connection").render("ob-test", cx.listener(|a, _, _, cx| a.test_connection(cx))))
+        .children(indicator.map(|(color, label)| {
+            div().flex_1().min_w_0().text_size(px(12.5)).font_semibold().text_color(color).child(label)
+        }))
 }
 
 fn field_row(icon_name: &'static str, input: Input) -> impl IntoElement {

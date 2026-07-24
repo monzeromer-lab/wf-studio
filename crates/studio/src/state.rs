@@ -47,6 +47,15 @@ pub enum ConnMode {
     Acp,
 }
 
+/// Result of a "Test connection" attempt against the selected provider.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnTest {
+    Untested,
+    Testing,
+    Ok,
+    Failed(String),
+}
+
 // ── Projects (Home dashboard) ───────────────────────────────────────────────
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectKind {
