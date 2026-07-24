@@ -8278,6 +8278,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wf-evals"
+version = "0.1.0"
+dependencies = [
+ "wf-ai",
+ "wf-core",
+]
+
+[[package]]
 name = "wf-preview"
 version = "0.1.0"
 dependencies = [

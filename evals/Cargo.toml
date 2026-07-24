@@ -1,0 +1,16 @@
+[package]
+name = "wf-evals"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wf-evals"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wf-ai.workspace = true
+wf-core.workspace = true
