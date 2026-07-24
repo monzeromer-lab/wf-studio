@@ -49,7 +49,7 @@ impl DiagnosticInfo {
                 column: Some(d.column),
                 hint: d.hint.clone(),
             },
-            E::CodegenError(msg) | E::ConfigError(msg) | E::IoError(msg) => Self {
+            E::CodegenError(msg) | E::ConfigError(msg) | E::IoError(msg) | E::EditError(msg) => Self {
                 message: msg.clone(),
                 line: None,
                 column: None,
