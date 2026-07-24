@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 webfluent.workspace = true
+wf-ai.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
