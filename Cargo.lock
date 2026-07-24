@@ -8376,11 +8376,13 @@ name = "wf-studio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs 5.0.1",
  "gpui",
  "gpui-component",
  "gtk",
  "lb-wry",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

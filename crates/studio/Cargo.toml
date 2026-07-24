@@ -40,6 +40,8 @@ wry.workspace = true
 raw-window-handle.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
+dirs.workspace = true
+serde.workspace = true
 
 # The canvas preview webview is built as a child of the gpui window. On Linux
 # that path is webkit2gtk (needs gtk initialised on the main thread) parented

@@ -43,6 +43,9 @@ futures-util = "0.3"
 # shows the AI/edit/preview pipeline without extra setup.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# On-disk project persistence (branded .wfp bundles in the OS data dir).
+dirs = "5"
 # BYO-key storage in the OS credential store. linux-keyutils is headless-safe (no
 # D-Bus); a desktop build can switch to the secret-service backend for cross-reboot
 # persistence — the KeyStore trait makes that a one-line swap.

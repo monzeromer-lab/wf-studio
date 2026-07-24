@@ -10,6 +10,7 @@ use crate::theme;
 
 // ── Screens & top-level mode ────────────────────────────────────────────────
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Login/Onboarding kept for the future studio backend
 pub enum Screen {
     Login,
     Home,
@@ -73,6 +74,7 @@ impl ProjectKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Published/Shared used once publishing/sharing land
 pub enum ProjectStatus {
     Published,
     Draft,
@@ -135,29 +137,6 @@ pub struct Project {
     pub tone: ProjectTone,
 }
 
-/// The seed dashboard projects (mock `state.projects`).
-pub fn seed_projects() -> Vec<Project> {
-    use ProjectKind::*;
-    use ProjectStatus::*;
-    use ProjectTone::*;
-    let mk = |id: &str, kind, name: &str, sub: &str, updated: &str, status, mono: &str, tone| Project {
-        id: id.to_string().into(),
-        kind,
-        name: name.to_string().into(),
-        sub: sub.to_string().into(),
-        updated: updated.to_string().into(),
-        status,
-        mono: mono.to_string().into(),
-        tone,
-    };
-    vec![
-        mk("p1", Website, "Layali", "Rooftop venue \u{b7} Riyadh", "2 min ago", Published, "\u{644}", Accent),
-        mk("p2", Website, "Yasmine Caf\u{e9}", "Caf\u{e9} landing page", "Yesterday", Draft, "\u{64a}", Violet),
-        mk("p3", Website, "Naseem Store", "Online shop", "3 days ago", Draft, "\u{646}", Teal),
-        mk("ds1", System, "Studio DS", "12 components \u{b7} 40 tokens", "1 week ago", Shared, "S", Blue),
-    ]
-}
-
 /// The compile/generation status surfaced in the top-bar badge (FR-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -195,6 +174,7 @@ pub enum Device {
 
 /// Semantic tone for compile-log entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Warn tone used for compile warnings
 pub enum Tone {
     Ok,
     Warn,

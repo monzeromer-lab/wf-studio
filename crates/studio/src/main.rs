@@ -6,6 +6,7 @@ mod assets;
 mod ipc;
 mod site;
 mod state;
+mod store;
 mod theme;
 mod ui;
 

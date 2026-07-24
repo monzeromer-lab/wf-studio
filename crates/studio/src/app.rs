@@ -10,7 +10,7 @@
 //! `build_as_child` a handle we construct. webkit's gtk widget is pumped from
 //! GPUI's loop.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -30,6 +30,89 @@ use crate::{ipc, site, ui};
 
 /// The custom-protocol origin for the preview webview.
 const ORIGIN: &str = "wf://localhost";
+
+/// A website project's stashed mutable state, swapped in/out of the live fields
+/// (`project`, `messages`, `generated`) as the user switches projects.
+struct ProjectState {
+    sources: BTreeMap<String, String>,
+    messages: Vec<Message>,
+    generated: bool,
+}
+
+impl ProjectState {
+    /// A fresh website project seeded with a minimal starter page titled after the
+    /// project, so a newly-opened card shows its own content and is independently
+    /// editable (real generation replaces it).
+    fn starter(name: &str) -> Self {
+        let mut sources = BTreeMap::new();
+        sources.insert("src/pages/Home.wf".to_string(), starter_source(name));
+        Self { sources, messages: Vec::new(), generated: true }
+    }
+}
+
+/// A minimal starter Home page titled after the project.
+fn starter_source(name: &str) -> String {
+    let esc = name.replace('"', "'");
+    format!(
+        "Page Home (path: \"/\", title: \"{esc}\") {{\n  Container {{\n    Heading(\"{esc}\", h1)\n    Text(\"Describe a change in the assistant, or click any element to tweak it.\")\n    Button(\"Get started\", primary)\n  }}\n}}\n"
+    )
+}
+
+/// The demo projects to seed on a first run (empty store), as real persisted
+/// bundles with starter sources.
+fn seed_project_bundles() -> Vec<crate::store::ProjectBundle> {
+    let now = crate::store::now_secs();
+    let mk = |id: &str, kind: &str, name: &str| {
+        let mut sources = BTreeMap::new();
+        sources.insert("src/pages/Home.wf".to_string(), starter_source(name));
+        crate::store::ProjectBundle {
+            version: 1,
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            created: now,
+            updated: now,
+            sources,
+            generated: true,
+        }
+    };
+    vec![
+        mk("layali", "website", "Layali"),
+        mk("yasmine", "website", "Yasmine Café"),
+        mk("naseem", "website", "Naseem Store"),
+        mk("studio-ds", "system", "Studio DS"),
+    ]
+}
+
+/// Build the display `Project` card from a persisted bundle.
+fn project_from_bundle(b: &crate::store::ProjectBundle) -> Project {
+    let kind = if b.kind == "system" { ProjectKind::System } else { ProjectKind::Website };
+    let mono: SharedString = b.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "•".into()).into();
+    // Deterministic accent per project id.
+    let tones = [ProjectTone::Accent, ProjectTone::Violet, ProjectTone::Teal, ProjectTone::Blue];
+    let tone = tones[(b.id.bytes().map(|x| x as usize).sum::<usize>()) % tones.len()];
+    let ago = crate::store::now_secs().saturating_sub(b.updated);
+    Project {
+        id: b.id.clone().into(),
+        kind,
+        name: b.name.clone().into(),
+        sub: if kind == ProjectKind::System { "Design system".into() } else { "Website".into() },
+        updated: relative_time(ago).into(),
+        status: ProjectStatus::Draft,
+        mono,
+        tone,
+    }
+}
+
+/// Coarse "N ago" label from a seconds-elapsed value.
+fn relative_time(secs: u64) -> String {
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86_399 => format!("{} hour(s) ago", secs / 3600),
+        _ => format!("{} day(s) ago", secs / 86_400),
+    }
+}
 
 pub struct StudioApp {
     pub screen: Screen,
@@ -70,6 +153,12 @@ pub struct StudioApp {
     pub home_filter: HomeFilter,
     pub projects: Vec<Project>,
     pub current_project: Option<SharedString>,
+    /// Per-website-project state, so switching cards preserves each project's own
+    /// `.wf` sources, chat, and generated status (the live one lives in `project`/
+    /// `messages`/`generated`; this holds the stashed rest). Keyed by project id.
+    project_states: HashMap<SharedString, ProjectState>,
+    /// On-disk persistence for projects (branded `.wfp` bundles).
+    store: crate::store::ProjectStore,
     pub new_type: ProjectKind,
     pub modal: Option<Modal>,
     pub conn_mode: ConnMode,
@@ -207,6 +296,27 @@ impl StudioApp {
         // Persistent drag-resize state for the workspace columns.
         let resize_state = cx.new(|_| ResizableState::default());
 
+        // Load persisted projects (branded .wfp bundles); seed the demo set on a
+        // first run so the dashboard isn't empty. Each becomes a real, saved project.
+        let store = crate::store::ProjectStore::open();
+        let mut bundles = store.load_all();
+        if bundles.is_empty() {
+            bundles = seed_project_bundles();
+            for b in &bundles {
+                let _ = store.save(b);
+            }
+        }
+        let loaded_projects: Vec<Project> = bundles.iter().map(project_from_bundle).collect();
+        let loaded_states: HashMap<SharedString, ProjectState> = bundles
+            .iter()
+            .map(|b| {
+                (
+                    SharedString::from(b.id.clone()),
+                    ProjectState { sources: b.sources.clone(), messages: Vec::new(), generated: b.generated },
+                )
+            })
+            .collect();
+
         // Drive webkit's gtk widget from GPUI's loop (no gtk main loop of its
         // own), and apply any canvas-selection clicks the preview posted over
         // the IPC bridge meanwhile.
@@ -262,8 +372,10 @@ impl StudioApp {
             login_pw,
             login_busy: false,
             home_filter: HomeFilter::All,
-            projects: seed_projects(),
+            projects: loaded_projects,
             current_project: None,
+            project_states: loaded_states,
+            store,
             new_type: ProjectKind::Website,
             modal: None,
             conn_mode: ConnMode::Key,
@@ -728,36 +840,87 @@ impl StudioApp {
     }
     pub fn open_project(&mut self, id: SharedString, cx: &mut Context<Self>) {
         let Some(p) = self.projects.iter().find(|p| p.id == id).cloned() else { return };
-        self.current_project = Some(p.id.clone());
         self.modal = None;
+        let switching = self.current_project.as_ref() != Some(&id);
         match p.kind {
             ProjectKind::System => {
+                // The design-system workspace keeps its own state for now
+                // (generating a DS as WebFluent is the next milestone).
+                if switching {
+                    self.stash_active_website();
+                    self.current_project = Some(id.clone());
+                    self.messages.clear();
+                    self.push_msg(Role::Assistant, "This is your design system. Tell me to add a token, restyle a component, or generate a new one \u{2014} I\u{2019}ll apply it across the kit.");
+                }
                 self.screen = Screen::DsWorkspace;
-                self.messages.clear();
-                self.push_msg(
-                    Role::Assistant,
-                    "This is your design system. Tell me to add a token, restyle a component, or generate a new one \u{2014} I\u{2019}ll apply it across the kit.",
-                );
             }
             ProjectKind::Website => {
-                let built = p.id.as_ref() == "p1";
-                self.screen = Screen::Workspace;
-                self.generated = built;
-                self.review_open = false;
-                self.messages.clear();
-                if built {
-                    self.status = Status::Compiled;
-                    self.push_msg(
-                        Role::Assistant,
-                        "Welcome back \u{2014} your site is live. Ask for a change, or click any element to tweak it.",
-                    );
-                } else {
-                    self.status = Status::Idle;
+                if switching {
+                    // Stash the project we're leaving, then load this one's own sources,
+                    // chat, and generated status (or a fresh starter for a first open).
+                    self.stash_active_website();
+                    let state = self.project_states.remove(&id).unwrap_or_else(|| ProjectState::starter(p.name.as_ref()));
+                    self.generated = state.generated;
+                    self.messages = state.messages;
+                    self.project.restore_sources(state.sources);
+                    self.current_project = Some(id.clone());
+                    self.clear_selection_and_review();
+                    if self.messages.is_empty() {
+                        self.push_msg(Role::Assistant, "Ask for a change, or click any element in the preview to tweak it.");
+                    }
                 }
-                self.sync_preview(cx);
+                self.screen = Screen::Workspace;
+                self.status = if self.generated { Status::Compiled } else { Status::Idle };
+                self.recompile_and_reload(cx);
             }
         }
         cx.notify();
+    }
+
+    /// Stash the currently-open website project's live state so switching away
+    /// preserves it. No-op when the active project isn't a website.
+    fn stash_active_website(&mut self) {
+        self.save_active_project();
+    }
+
+    /// Persist the currently-open website project — both to the in-memory stash (so
+    /// switching cards preserves it) and to disk as a `.wfp` bundle (so it survives
+    /// restarts). No-op unless the active project is a website.
+    fn save_active_project(&mut self) {
+        let Some(id) = self.current_project.clone() else { return };
+        let Some(p) = self.projects.iter().find(|p| p.id == id && p.kind == ProjectKind::Website).cloned() else {
+            return;
+        };
+        let sources = self.project.snapshot();
+        self.project_states.insert(
+            id.clone(),
+            ProjectState { sources: sources.clone(), messages: self.messages.clone(), generated: self.generated },
+        );
+        let created = self.store.load_one(id.as_ref()).map(|b| b.created).unwrap_or_else(crate::store::now_secs);
+        let bundle = crate::store::ProjectBundle {
+            version: 1,
+            id: id.to_string(),
+            name: p.name.to_string(),
+            kind: "website".to_string(),
+            created,
+            updated: crate::store::now_secs(),
+            sources,
+            generated: self.generated,
+        };
+        if let Err(e) = self.store.save(&bundle) {
+            error!(error = %e, id = %id, "failed to persist project");
+        }
+    }
+
+    /// Reset selection / inspector / review state when switching projects.
+    fn clear_selection_and_review(&mut self) {
+        self.selection.clear();
+        self.sel_nodes.clear();
+        self.edits.clear();
+        self.review_open = false;
+        self.proposal = None;
+        self.proposal_file = None;
+        self.proposal_node = None;
     }
     pub fn new_project(&mut self, cx: &mut Context<Self>) {
         self.open_modal(Modal::NewProject, cx);
@@ -767,25 +930,51 @@ impl StudioApp {
         cx.notify();
     }
     pub fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
         self.modal = None;
-        match self.new_type {
-            ProjectKind::System => {
-                self.screen = Screen::DsWorkspace;
-                self.current_project = Some("new".into());
-                self.messages.clear();
-                self.push_msg(
-                    Role::Assistant,
-                    "Let\u{2019}s build your design system. Describe your brand \u{2014} colors, type, feel \u{2014} and I\u{2019}ll generate a starter kit of tokens and components.",
-                );
+        // Persist whatever's open, then mint a real, saved project and open it.
+        self.save_active_project();
+        let kind = self.new_type;
+        let now = crate::store::now_secs();
+        let id: SharedString = format!("p-{now}").into();
+        let name = match kind {
+            ProjectKind::System => "New design system",
+            ProjectKind::Website => "New website",
+        };
+        let mut sources = BTreeMap::new();
+        sources.insert("src/pages/Home.wf".to_string(), starter_source(name));
+        let bundle = crate::store::ProjectBundle {
+            version: 1,
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: match kind {
+                ProjectKind::System => "system",
+                ProjectKind::Website => "website",
             }
-            ProjectKind::Website => {
-                self.ob_step = 0;
-                self.generated = false;
-                self.review_open = false;
-                self.messages.clear();
-                self.set_prompt("", window, cx);
-                self.screen = Screen::Onboarding;
-            }
+            .to_string(),
+            created: now,
+            updated: now,
+            sources: sources.clone(),
+            // A fresh website starts empty (prompt to generate); the DS kind shows its workspace.
+            generated: false,
+        };
+        if let Err(e) = self.store.save(&bundle) {
+            error!(error = %e, "failed to save new project");
+        }
+        self.projects.insert(0, project_from_bundle(&bundle));
+        self.project_states.insert(id.clone(), ProjectState { sources, messages: Vec::new(), generated: false });
+        self.open_project(id, cx);
+    }
+
+    /// Delete a project from disk and the dashboard.
+    #[allow(dead_code)] // wired to a card affordance next
+    pub fn delete_project(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let _ = self.store.delete(id.as_ref());
+        self.projects.retain(|p| p.id != id);
+        self.project_states.remove(&id);
+        if self.current_project.as_ref() == Some(&id) {
+            self.current_project = None;
+            self.screen = Screen::Home;
         }
         cx.notify();
     }
@@ -793,6 +982,8 @@ impl StudioApp {
         self.open_modal(Modal::Exit, cx);
     }
     pub fn confirm_exit(&mut self, cx: &mut Context<Self>) {
+        // Preserve the project we're leaving so re-opening it restores its work.
+        self.stash_active_website();
         self.screen = Screen::Home;
         self.modal = None;
         self.current_project = None;
@@ -982,6 +1173,7 @@ impl StudioApp {
                         a.project.set_source(&file, outcome.source);
                         a.recompile_and_reload(cx);
                         a.record_compile(true, format!("Self-healed a runtime error in {} attempt(s)", outcome.attempts), None);
+                        a.save_active_project();
                         a.history.checkpoint("Self-healed a runtime error", a.project.snapshot());
                         a.status = Status::Compiled;
                         a.push_msg(Role::Assistant, format!("Fixed it in {} attempt(s) — your design was untouched.", outcome.attempts));
@@ -1295,6 +1487,7 @@ impl StudioApp {
                                     format!("Generated your page · {} node(s)", a.project.compiled().node_map.len()),
                                     (healed > 0).then(|| format!("self-healed {healed} compile issue(s)").into()),
                                 );
+                                a.save_active_project();
                                 let note = if healed > 0 {
                                     format!("Done \u{2014} your page is live (self-healed {healed} compile issue(s) along the way). Click any part of the preview to tweak it.")
                                 } else {
@@ -1488,6 +1681,7 @@ impl StudioApp {
                 }
                 self.recompile_and_reload(cx);
                 self.record_compile(true, format!("Applied {count} change(s) from review"), None);
+                self.save_active_project();
                 self.history.checkpoint(format!("Applied {count} change(s)"), self.project.snapshot());
                 self.proposal = None;
                 self.proposal_file = None;
