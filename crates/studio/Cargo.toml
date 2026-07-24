@@ -3,10 +3,29 @@ name = "wf-studio"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
 
 [[bin]]
 name = "wf-studio"
 path = "src/main.rs"
+
+# Desktop bundle metadata for `cargo bundle` (.app/.deb/.msi). Add an icon before
+# release: assets/icon.png (512×512) — cargo-bundle derives .icns/.ico from it.
+[package.metadata.bundle]
+name = "WebFluent Studio"
+identifier = "app.webfluent.studio"
+short_description = "Build websites by talking to an AI."
+long_description = """
+WebFluent Studio lets anyone build a real website by describing it in plain
+language. An AI writes WebFluent source, the studio compiles it in-process and
+shows a live preview, and you refine by clicking elements and reviewing each
+change — no code is ever shown.
+"""
+category = "DeveloperTool"
+copyright = "Copyright © 2026 Monzer Omer. Licensed GPL-3.0-or-later."
+# icon = ["assets/icon.png"]
 
 [dependencies]
 webfluent.workspace = true

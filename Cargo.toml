@@ -6,6 +6,10 @@ members = ["crates/core", "crates/ai", "crates/preview", "crates/studio", "evals
 version = "0.1.0"
 edition = "2024"
 publish = false
+# GPL-3.0 because the app links the GPL-3.0 `webfluent` compiler (§2 licensing note).
+license = "GPL-3.0-or-later"
+authors = ["Monzer Omer <monzer.a.omer@gmail.com>"]
+description = "WebFluent Studio — build websites by talking to an AI."
 
 [workspace.dependencies]
 wf-core = { path = "crates/core" }
