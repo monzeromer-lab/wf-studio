@@ -7,10 +7,12 @@ mod artifacts;
 mod diff;
 mod generate;
 mod project;
+mod proposal;
 
 pub use artifacts::{Artifact, Artifacts};
 pub use diff::{diff, Chip, ChipKind};
 pub use generate::{edit_node, generate_page, EditOutcome, GenConfig, GenError, GenOutcome};
+pub use proposal::Proposal;
 pub use project::{compile_merged, compile_source, FileRange, OutlineNode, ResolvedNode, WfProject};
 
 // Re-export the engine's compiled-output types so downstream crates (preview,
