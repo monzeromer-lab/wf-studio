@@ -21,7 +21,7 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
         Modal::Publish => publish(app, cx).into_any_element(),
         Modal::Share => share(app, cx).into_any_element(),
         Modal::Settings => settings(app, cx).into_any_element(),
-        Modal::History => history(cx).into_any_element(),
+        Modal::History => history(app, cx).into_any_element(),
         Modal::Profile => profile(cx).into_any_element(),
     };
     scrim(body, cx)
@@ -530,23 +530,27 @@ fn collaborator_row(app: &StudioApp, i: usize, c: &crate::state::Collaborator, c
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
-fn history(cx: &mut Context<StudioApp>) -> impl IntoElement {
+fn history(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    // Newest first, keeping each revision's real index for restore.
+    let entries: Vec<_> = app.history_entries().into_iter().enumerate().rev().collect();
     card(440.0)
         .child(h_flex().w_full().px(px(24.0)).pt(px(22.0)).items_start().gap(px(13.0)).child(tile("clock", theme::bg_raised(), theme::accent())).child(heading("Version history", "Every change you keep is saved automatically.")).child(close_btn(cx)))
-        .child(v_flex().px(px(24.0)).pt(px(14.0)).pb(px(22.0)).children(crate::state::HISTORY_LOG.iter().enumerate().map(|(i, (label, time, current))| {
-            let dot_color = if *current { theme::accent() } else { theme::text_faint() };
+        .child(v_flex().px(px(24.0)).pt(px(14.0)).pb(px(22.0)).children(entries.into_iter().map(|(i, (label, current))| {
+            let dot_color = if current { theme::accent() } else { theme::text_faint() };
             h_flex()
                 .gap(px(13.0))
                 .py(px(12.0))
-                .items_start()
-                .child(div().mt(px(4.0)).size(px(11.0)).flex_none().rounded_full().bg(dot_color))
+                .items_center()
+                .child(div().size(px(11.0)).flex_none().rounded_full().bg(dot_color))
                 .child(
-                    v_flex()
+                    h_flex()
                         .flex_1()
-                        .child(h_flex().items_center().gap(px(8.0)).child(div().text_size(px(13.0)).font_semibold().text_color(theme::text_strong()).child(*label)).when(*current, |d| d.child(div().px(px(7.0)).py(px(2.0)).rounded(px(5.0)).bg(theme::accent_tint()).text_color(theme::accent()).text_size(px(9.5)).font_bold().child("CURRENT"))))
-                        .child(div().mt(px(2.0)).text_size(px(11.5)).text_color(theme::text_caption()).child(*time)),
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(div().text_size(px(13.0)).font_semibold().text_color(theme::text_strong()).child(label))
+                        .when(current, |d| d.child(div().px(px(7.0)).py(px(2.0)).rounded(px(5.0)).bg(theme::accent_tint()).text_color(theme::accent()).text_size(px(9.5)).font_bold().child("CURRENT"))),
                 )
-                .when(!*current, |r| r.child(div().id(("restore", i)).px(px(12.0)).py(px(6.0)).rounded(px(8.0)).border_1().border_color(theme::line_strong()).bg(theme::bg_raised()).text_size(px(12.0)).font_semibold().text_color(theme::text_soft()).cursor_pointer().hover(|s| s.text_color(theme::text_strong())).child("Restore").on_click(cx.listener(|a, _, _, cx| a.restore_version(cx)))))
+                .when(!current, |r| r.child(div().id(("restore", i)).px(px(12.0)).py(px(6.0)).rounded(px(8.0)).border_1().border_color(theme::line_strong()).bg(theme::bg_raised()).text_size(px(12.0)).font_semibold().text_color(theme::text_soft()).cursor_pointer().hover(|s| s.text_color(theme::text_strong())).child("Restore").on_click(cx.listener(move |a, _, _, cx| a.restore_revision(i, cx)))))
         })))
 }
 

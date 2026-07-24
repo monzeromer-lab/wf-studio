@@ -632,13 +632,6 @@ pub fn compile_log() -> Vec<CompileEntry> {
     ]
 }
 
-/// Version-history entry (History modal, static demo data): `(label, time, current)`.
-pub const HISTORY_LOG: &[(&str, &str, bool)] = &[
-    ("Applied hero copy & stage glow", "Just now", true),
-    ("Generated 5 sections", "2 min ago", false),
-    ("Project created", "5 min ago", false),
-];
-
 // ── Chips, edits, history, activity, messages ───────────────────────────────
 /// The four edit categories from the plan (§4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

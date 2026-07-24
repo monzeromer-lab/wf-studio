@@ -174,6 +174,17 @@ impl WfProject {
         self.sources.get(path).map(|s| s.as_str())
     }
 
+    /// A clone of all current sources — a history checkpoint (FR-14).
+    pub fn snapshot(&self) -> BTreeMap<String, String> {
+        self.sources.clone()
+    }
+
+    /// Replace all sources (a history restore) and recompile.
+    pub fn restore_sources(&mut self, sources: BTreeMap<String, String>) {
+        self.sources = sources;
+        self.recompile();
+    }
+
     /// Resolve a node id (from a `data-wf-node` click) to its info, source file,
     /// and exact source text. `None` if the id is unknown.
     pub fn resolve_node(&self, node_id: &str) -> Option<ResolvedNode<'_>> {

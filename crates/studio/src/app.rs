@@ -115,6 +115,8 @@ pub struct StudioApp {
     pub preview: Option<Entity<WebView>>,
     /// The live WebFluent project: `.wf` sources + the latest compile.
     project: wf_core::WfProject,
+    /// Source-snapshot history for undo/redo/restore (FR-14).
+    history: wf_core::History,
     /// The output the `wf://` protocol serves, shared with the serve closure.
     /// Swapped on recompile, then the webview reloads to pick it up.
     output: Arc<RwLock<CompiledSite>>,
@@ -160,6 +162,8 @@ impl StudioApp {
                 project.compiled().node_map.len(),
             ),
         }
+        let mut history = wf_core::History::new();
+        history.checkpoint("Started your project", project.snapshot());
         let output = Arc::new(RwLock::new(project.compiled().clone()));
 
         // Build the preview webview as a child of the gpui window and keep it
@@ -276,6 +280,7 @@ impl StudioApp {
             toast_task: None,
             preview,
             project,
+            history,
             output,
             pipeline_task: None,
             next_id: 0,
@@ -661,13 +666,40 @@ impl StudioApp {
         cx.notify();
     }
     pub fn can_undo(&self) -> bool {
-        false
+        self.history.can_undo()
     }
     pub fn can_redo(&self) -> bool {
-        false
+        self.history.can_redo()
     }
-    pub fn undo(&mut self, _cx: &mut Context<Self>) {}
-    pub fn redo(&mut self, _cx: &mut Context<Self>) {}
+    pub fn undo(&mut self, cx: &mut Context<Self>) {
+        let Some(sources) = self.history.undo().map(|r| r.sources.clone()) else { return };
+        self.project.restore_sources(sources);
+        self.recompile_and_reload(cx);
+        cx.notify();
+    }
+    pub fn redo(&mut self, cx: &mut Context<Self>) {
+        let Some(sources) = self.history.redo().map(|r| r.sources.clone()) else { return };
+        self.project.restore_sources(sources);
+        self.recompile_and_reload(cx);
+        cx.notify();
+    }
+    /// History revisions for the version panel: `(summary, is_current)`, oldest first.
+    pub fn history_entries(&self) -> Vec<(SharedString, bool)> {
+        let cur = self.history.cursor();
+        self.history
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (SharedString::from(r.summary.clone()), i == cur))
+            .collect()
+    }
+    /// Restore a specific history revision (a History-panel click).
+    pub fn restore_revision(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(sources) = self.history.restore(index).map(|r| r.sources.clone()) else { return };
+        self.project.restore_sources(sources);
+        self.recompile_and_reload(cx);
+        cx.notify();
+    }
 
     // ── IPC bridge ───────────────────────────────────────────────────────────
     fn apply_ipc(&mut self, events: Vec<ipc::Event>, cx: &mut Context<Self>) {
@@ -940,6 +972,7 @@ impl StudioApp {
                                 };
                                 a.push_msg(Role::Assistant, note);
                                 a.sync_preview(cx);
+                                a.history.checkpoint("Generated a page", a.project.snapshot());
                             }
                         }
                     }
@@ -1108,6 +1141,7 @@ impl StudioApp {
             Ok((source, count)) => {
                 self.project.set_source(&file, source);
                 self.recompile_and_reload(cx);
+                self.history.checkpoint(format!("Applied {count} change(s)"), self.project.snapshot());
                 self.proposal = None;
                 self.proposal_file = None;
                 self.proposal_node = None;
@@ -1501,10 +1535,6 @@ impl StudioApp {
     }
 
     // ── history ───────────────────────────────────────────────────────────────
-    pub fn restore_version(&mut self, cx: &mut Context<Self>) {
-        self.modal = None;
-        self.show_toast(ToastTone::Success, "Restored to this version.", cx);
-    }
 }
 
 impl Render for StudioApp {
