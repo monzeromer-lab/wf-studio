@@ -45,25 +45,27 @@ decisions (2026-07-24):
 | Review/chips UI surface (`ChipKind`, `review_items`, before/after) | §4.5 | 🟡 UI built on mock data — wire to real AST-diff in **M3** |
 | `wf-ai`: `Provider` trait, Anthropic + OpenAI-compat adapters, SSE, dedicated-thread reqwest | §4.3, **M1** | ✅ owned by studio; generation loop + language card + KeyStore added in **M1** |
 
-**Net position on the canonical scheme (updated 2026-07-24):** **M0, M1, M2 done.**
-The **R0 four-crate refactor** landed (studio → GPUI-free `wf-core` + `wf-preview` + `wf-ai` →
-`webfluent`). **M1 (generation loop) is complete**: the app generates real pages from a prompt
-via `wf_core::generate_page` (validate + bounded self-heal) using a BYO key persisted in the OS
-keychain (`wf-ai` `KeyStore`), with the compile-verified language card and a `wf-evals` harness.
-Remaining: the **proposal/AST-diff→chips engine** (**M3** — the product's heart; the review UI is
-already built), **runtime self-heal + history** (**M4**), and minor M1 polish (test-connection
-button, model picker).
+**Net position on the canonical scheme (updated 2026-07-24):** **M0–M4 done** (bar the
+optional M3.5 before/after scrub). The **R0 four-crate refactor** landed (studio → GPUI-free
+`wf-core` + `wf-preview` + `wf-ai` → `webfluent`), and `wf-core`/`wf-ai` now carry the whole
+offline brain — generation, scoped edits, diff/chips/proposal, history, self-heal + design-freeze,
+and the eval harness — all hermetically tested; the studio wires each to the real UI. **Only
+M3.5 (scrub) and M5 (hardening) remain**, plus minor polish (test-connection button, real
+model picker).
 
 ### Build order (done → next)
 
-- **R0 — crate refactor** ✅ — the 4-crate boundary exists (compile→`wf-core`, `wf://` serving→
-  `wf-preview`; studio owns `wf-ai`; stale scaffold replaced/retired).
-- **M1 — generation loop** ✅ — `ScriptedProvider` + `collect_text`, `generate_page`,
+- **R0 — crate refactor** ✅ — the 4-crate boundary (compile→`wf-core`, `wf://` serving→
+  `wf-preview`; studio owns `wf-ai`; stale scaffold retired).
+- **M1 — generation loop** ✅ — `ScriptedProvider`/`collect_text`, `generate_page`,
   `LANGUAGE_CARD`, keychain `KeyStore`, app wiring, `wf-evals`.
-- **M3 — scoped edits + Visual Diff Review** (next; "the product's heart"): AST-diff base vs
-  proposal → chips → before/after review → accepted chips apply via `apply_edits`.
-- **M4 — guardrails + P1**: runtime self-heal + design-freeze validation, history, RTL/device,
-  try-it chips. **M5 — alpha hardening.**
+- **M3 — scoped edits + Visual Diff Review** ✅ — `edit_node` → `diff` → chips → review panel →
+  `Proposal::apply_accepted` → reload, with inline re-prompt (FR-8). *Remaining: M3.5 scrub.*
+- **M4 — guardrails + P1** ✅ — history/undo/restore (FR-14), runtime self-heal + design-freeze
+  via a style fingerprint (FR-19–22), try-it chips (FR-9), RTL/device toggles + the engine's W4
+  logical-CSS audit (FR-11/12).
+- **M5 — alpha hardening** (next): onboarding, per-provider eval pass to pick default models,
+  packaging, the "zero code visible" audit (FR-6).
 
 ---
 
