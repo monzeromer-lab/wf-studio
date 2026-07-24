@@ -329,22 +329,6 @@ impl Permission {
     }
 }
 
-/// Chat model options (mock `modelDefs`).
-pub struct ModelDef {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub note: &'static str,
-}
-pub const MODELS: &[ModelDef] = &[
-    ModelDef { id: "sonnet", name: "Claude Sonnet 4.5", note: "Balanced \u{2014} best for most builds" },
-    ModelDef { id: "opus", name: "Claude Opus 4.1", note: "Deepest reasoning, slower" },
-    ModelDef { id: "gpt", name: "GPT-4.1", note: "OpenAI" },
-    ModelDef { id: "gemini", name: "Gemini 2.5 Pro", note: "Google" },
-];
-pub fn model_def(id: &str) -> &'static ModelDef {
-    MODELS.iter().find(|m| m.id == id).unwrap_or(&MODELS[0])
-}
-
 /// Composer skills (mock `skillDefs`).
 pub const SKILL_NAMES: &[&str] = &["Responsive layout", "SEO basics", "Accessibility (WCAG)", "Copywriting", "Motion & animation", "RTL polish"];
 

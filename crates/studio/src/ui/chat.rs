@@ -6,7 +6,7 @@ use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px, relat
 use gpui_component::{StyledExt, h_flex, input::Input, v_flex};
 
 use crate::app::StudioApp;
-use crate::state::{ChatMenu, Dir, Effort, MODELS, Message, Permission, ProjectKind, Role, SKILL_NAMES, method_colors};
+use crate::state::{ChatMenu, Dir, Effort, Message, Permission, ProjectKind, Role, SKILL_NAMES, method_colors};
 use crate::theme;
 use crate::ui::widgets::icon;
 
@@ -452,9 +452,7 @@ fn model_menu(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement 
         .shadow(theme::shadow_pop())
         .p(px(10.0))
         .child(menu_label("MODEL"))
-        .child(v_flex().gap(px(2.0)).children(MODELS.iter().enumerate().map(|(mi, m)| {
-            let id = m.id;
-            let active = app.chat_model.as_ref() == m.id;
+        .child(v_flex().gap(px(2.0)).children(app.provider_models().into_iter().enumerate().map(|(mi, (id, name, active))| {
             h_flex()
                 .id(("model", mi))
                 .items_center()
@@ -466,8 +464,8 @@ fn model_menu(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement 
                 .cursor_pointer()
                 .when(active, |d| d.bg(theme::accent_tint()))
                 .hover(|s| s.bg(theme::bg_hover()))
-                .on_click(cx.listener(move |a, _, _, cx| a.set_chat_model(id, cx)))
-                .child(v_flex().flex_1().child(div().text_size(px(13.0)).font_semibold().text_color(theme::text_strong()).child(m.name)).child(div().text_size(px(11.0)).text_color(theme::text_caption()).child(m.note)))
+                .on_click(cx.listener(move |a, _, _, cx| a.set_chat_model(&id, cx)))
+                .child(div().flex_1().text_size(px(13.0)).font_semibold().text_color(theme::text_strong()).child(name))
                 .when(active, |d| d.child(icon("check", 15.0, theme::accent())))
         })))
         .child(div().h(px(1.0)).my(px(10.0)).bg(theme::line_faint()))

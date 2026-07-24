@@ -44,6 +44,13 @@ pub enum Wire {
     OpenAi,
 }
 
+/// A selectable model for a provider: its API id and a display name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+}
+
 impl ProviderKind {
     pub const ALL: [ProviderKind; 6] = [
         ProviderKind::Anthropic,
@@ -74,17 +81,40 @@ impl ProviderKind {
         }
     }
 
-    /// Sensible default model, shown pre-selected in settings (user-overridable,
-    /// PBRD §4.1). The eval harness (§4.4) picks the recommended defaults with
-    /// evidence in M5; these are the reasonable-out-of-the-box choices.
+    /// The recommended default model — the first of [`models`]. Shown pre-selected;
+    /// the eval harness (§4.4) refines these with evidence in M5.
     pub fn default_model(self) -> &'static str {
+        self.models()[0].id
+    }
+
+    /// The user-selectable models for this provider, recommended default first.
+    pub fn models(self) -> &'static [ModelInfo] {
         match self {
-            ProviderKind::Anthropic => "claude-opus-4-8",
-            ProviderKind::OpenAi => "gpt-4o",
-            ProviderKind::DeepSeek => "deepseek-chat",
-            ProviderKind::Kimi => "moonshot-v1-32k",
-            ProviderKind::Glm => "glm-4",
-            ProviderKind::Gemini => "gemini-2.0-flash",
+            ProviderKind::Anthropic => &[
+                ModelInfo { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
+                ModelInfo { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+                ModelInfo { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+            ],
+            ProviderKind::OpenAi => &[
+                ModelInfo { id: "gpt-4o", name: "GPT-4o" },
+                ModelInfo { id: "gpt-4o-mini", name: "GPT-4o mini" },
+            ],
+            ProviderKind::Gemini => &[
+                ModelInfo { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+                ModelInfo { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
+            ],
+            ProviderKind::DeepSeek => &[
+                ModelInfo { id: "deepseek-chat", name: "DeepSeek Chat" },
+                ModelInfo { id: "deepseek-reasoner", name: "DeepSeek Reasoner" },
+            ],
+            ProviderKind::Kimi => &[
+                ModelInfo { id: "moonshot-v1-32k", name: "Moonshot v1 (32k)" },
+                ModelInfo { id: "moonshot-v1-128k", name: "Moonshot v1 (128k)" },
+            ],
+            ProviderKind::Glm => &[
+                ModelInfo { id: "glm-4", name: "GLM-4" },
+                ModelInfo { id: "glm-4-plus", name: "GLM-4 Plus" },
+            ],
         }
     }
 

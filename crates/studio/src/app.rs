@@ -249,7 +249,7 @@ impl StudioApp {
             chat_menu: None,
             ds_picker_open: false,
             api_panel_open: false,
-            chat_model: "sonnet".into(),
+            chat_model: wf_ai::ProviderKind::Anthropic.default_model().into(),
             effort: Effort::Balanced,
             permission: Permission::Review,
             skills: vec![0],
@@ -355,7 +355,7 @@ impl StudioApp {
         }
         self.save_current_key(cx);
         let kind = self.provider_kind();
-        let model = kind.default_model().to_string();
+        let model = self.current_model();
         let provider = wf_ai::provider_for(kind, key);
         self.conn_test = ConnTest::Testing;
         cx.notify();
@@ -555,6 +555,7 @@ impl StudioApp {
         self.save_current_key(cx);
         self.provider = id;
         self.conn_test = ConnTest::Untested;
+        self.chat_model = self.provider_kind().default_model().into();
         let loaded = self.keys.get(self.provider_kind()).unwrap_or_default();
         self.api_key.update(cx, |s, cx| s.set_value(loaded, window, cx));
         cx.notify();
@@ -829,7 +830,7 @@ impl StudioApp {
         }
 
         let kind = self.provider_kind();
-        let mut config = wf_core::GenConfig::for_model(kind.default_model());
+        let mut config = wf_core::GenConfig::for_model(self.current_model());
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
 
@@ -887,7 +888,35 @@ impl StudioApp {
         }
     }
     pub fn chat_model_label(&self) -> String {
-        model_def(&self.chat_model).name.replace("Claude ", "")
+        let cur = self.chat_model.as_ref();
+        self.provider_kind()
+            .models()
+            .iter()
+            .find(|m| m.id == cur)
+            .map(|m| m.name.replace("Claude ", ""))
+            .unwrap_or_else(|| self.provider_kind().default_model().to_string())
+    }
+
+    /// The model id to send for generation — the picked model, or the provider
+    /// default if the pick isn't one of this provider's models.
+    pub fn current_model(&self) -> String {
+        let kind = self.provider_kind();
+        let cur = self.chat_model.as_ref();
+        if kind.models().iter().any(|m| m.id == cur) {
+            cur.to_string()
+        } else {
+            kind.default_model().to_string()
+        }
+    }
+
+    /// The current provider's models for the picker: `(id, name, is_selected)`.
+    pub fn provider_models(&self) -> Vec<(SharedString, SharedString, bool)> {
+        let cur = self.chat_model.as_ref();
+        self.provider_kind()
+            .models()
+            .iter()
+            .map(|m| (SharedString::from(m.id), SharedString::from(m.name), m.id == cur))
+            .collect()
     }
     pub fn right_mode(&self) -> RightMode {
         if self.busy {
@@ -1085,7 +1114,7 @@ impl StudioApp {
         self.save_current_key(cx);
 
         let kind = self.provider_kind();
-        let mut config = wf_core::GenConfig::for_model(kind.default_model());
+        let mut config = wf_core::GenConfig::for_model(self.current_model());
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
 
@@ -1182,7 +1211,7 @@ impl StudioApp {
         self.save_current_key(cx);
 
         let kind = self.provider_kind();
-        let mut config = wf_core::GenConfig::for_model(kind.default_model());
+        let mut config = wf_core::GenConfig::for_model(self.current_model());
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
         let node_for_edit = node.clone();
