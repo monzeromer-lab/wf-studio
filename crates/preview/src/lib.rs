@@ -9,6 +9,7 @@
 //! This crate is GPUI-free: the studio adapts it into entities/tasks.
 
 mod bridge;
+mod serve;
 mod store;
 
 #[cfg(target_os = "linux")]
@@ -17,6 +18,7 @@ mod detached;
 pub use detached::spawn_detached;
 
 pub use bridge::BRIDGE_JS;
+pub use serve::{resolve, respond, serve, MIME_CSS, MIME_HTML, MIME_JS};
 pub use store::ArtifactStore;
 
 /// Commands into the preview host (studio → preview).

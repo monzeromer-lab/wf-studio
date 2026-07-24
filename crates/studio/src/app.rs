@@ -10,7 +10,6 @@
 //! `build_as_child` a handle we construct. webkit's gtk widget is pumped from
 //! GPUI's loop.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -21,10 +20,7 @@ use anyhow::Context as _;
 use gpui::{Context, Entity, SharedString, Task, Window, prelude::*};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::webview::WebView;
-use wry::{
-    WebViewBuilder,
-    http::{Request, Response, header::CONTENT_TYPE},
-};
+use wry::{WebViewBuilder, http::Request};
 
 use crate::state::*;
 use crate::{ipc, site, ui};
@@ -1296,7 +1292,10 @@ fn pump_gtk() {
 /// [`CompiledSite`] held in `output` over `wf://`.
 fn build_preview(window: &mut Window, output: Arc<RwLock<CompiledSite>>) -> anyhow::Result<wry::WebView> {
     let builder = WebViewBuilder::new()
-        .with_custom_protocol("wf".into(), move |_id, request| serve(request, &output))
+        .with_custom_protocol("wf".into(), move |_id, request| {
+            let found = output.read().ok().and_then(|site| wf_preview::resolve(&site, request.uri().path()));
+            wf_preview::respond(found)
+        })
         .with_initialization_script(boot_script())
         .with_ipc_handler(|request: Request<String>| ipc::on_message(request.into_body()))
         .with_url(format!("{ORIGIN}/{}", site::PREVIEW_ENTRY));
@@ -1363,78 +1362,7 @@ fn find_gpui_window() -> anyhow::Result<u32> {
     anyhow::bail!("no window found with _NET_WM_PID = {my_pid}")
 }
 
-const MIME_HTML: &str = "text/html; charset=utf-8";
-const MIME_CSS: &str = "text/css; charset=utf-8";
-const MIME_JS: &str = "application/javascript; charset=utf-8";
-
-/// Serve one `wf://` request from the live compiled site.
-fn serve(request: Request<Vec<u8>>, output: &Arc<RwLock<CompiledSite>>) -> Response<Cow<'static, [u8]>> {
-    let path = request.uri().path().to_string();
-    let found = output.read().ok().and_then(|site| resolve(&site, &path));
-    match found {
-        Some((mime, bytes)) => Response::builder()
-            .status(200)
-            .header(CONTENT_TYPE, mime)
-            .body(Cow::Owned(bytes))
-            .unwrap(),
-        None => Response::builder()
-            .status(404)
-            .header(CONTENT_TYPE, "text/plain")
-            .body(Cow::Owned(b"not found".to_vec()))
-            .unwrap(),
-    }
-}
-
-/// Map a request path to a compiled resource: the stylesheet, the JS bundle, or a
-/// page by route (`/`, `/about`, `about/index.html`, …).
-fn resolve(site: &CompiledSite, path: &str) -> Option<(&'static str, Vec<u8>)> {
-    let p = path.trim_start_matches('/');
-    match p {
-        "styles.css" => Some((MIME_CSS, site.css.clone().into_bytes())),
-        "app.js" => Some((MIME_JS, site.js.clone().into_bytes())),
-        _ => {
-            let route = if p.is_empty() || p == "index.html" {
-                "/".to_string()
-            } else {
-                format!("/{}", p.trim_end_matches("index.html").trim_end_matches('/'))
-            };
-            site.pages
-                .iter()
-                .find(|pg| pg.route == route)
-                .map(|pg| (MIME_HTML, pg.html.clone().into_bytes()))
-        }
-    }
-}
-
 fn boot_script() -> String {
     // Inject the click/lifecycle bridge before the compiled site's own scripts.
-    // (M3 repoints the bridge from `data-wf-el` to Slice-2's `data-wf-node`.)
     ipc::BRIDGE_JS.to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wf_core::compile_source;
-
-    #[test]
-    fn resolve_serves_compiled_page_css_and_js() {
-        let site = compile_source("Page Home (path: \"/\") { Container { Text(\"hi\") } }").unwrap();
-
-        // "/" and index.html resolve to the home page HTML with node-id stamps.
-        for path in ["/", "/index.html", "index.html"] {
-            let (mime, bytes) = resolve(&site, path).unwrap_or_else(|| panic!("no page for {path}"));
-            assert_eq!(mime, MIME_HTML);
-            assert!(String::from_utf8(bytes).unwrap().contains("data-wf-node="), "{path}: no stamps");
-        }
-
-        // Stylesheet + JS bundle by their conventional paths.
-        assert_eq!(resolve(&site, "/styles.css").unwrap().0, MIME_CSS);
-        let (js_mime, js) = resolve(&site, "/app.js").unwrap();
-        assert_eq!(js_mime, MIME_JS);
-        assert!(String::from_utf8(js).unwrap().contains("data-wf-node"));
-
-        // Unknown path → 404 (None).
-        assert!(resolve(&site, "/nope.txt").is_none());
-    }
 }

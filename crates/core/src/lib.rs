@@ -9,6 +9,10 @@ mod project;
 pub use artifacts::{Artifact, Artifacts};
 pub use project::{compile_merged, compile_source, FileRange, OutlineNode, ResolvedNode, WfProject};
 
+// Re-export the engine's compiled-output types so downstream crates (preview,
+// studio) depend on the model through wf-core rather than webfluent directly.
+pub use webfluent::{CompiledPage, CompiledSite};
+
 /// Compile state surfaced in the Studio top bar (FR-13).
 ///
 /// Diagnostics are structured data for the self-heal loop and the activity
