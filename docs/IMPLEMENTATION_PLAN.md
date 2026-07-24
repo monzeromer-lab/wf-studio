@@ -43,22 +43,27 @@ decisions (2026-07-24):
 | Click-to-code (bridge `data-wf-node` → `resolve_node` → highlight) | §4.2, **M2** | ✅ done |
 | Inspector (color/size/weight/align/bg/radius → `apply_edits`), outline, add-blocks | **M4** Quick Inspector | ✅ done (direct AST mutation, no LLM) |
 | Review/chips UI surface (`ChipKind`, `review_items`, before/after) | §4.5 | 🟡 UI built on mock data — wire to real AST-diff in **M3** |
-| `wf-ai`: `Provider` trait, Anthropic + OpenAI-compat adapters, SSE, dedicated-thread reqwest | §4.3, **M1** | 🟡 builds; text-streaming only — add generation + revive in **M1** |
+| `wf-ai`: `Provider` trait, Anthropic + OpenAI-compat adapters, SSE, dedicated-thread reqwest | §4.3, **M1** | ✅ owned by studio; generation loop + language card + KeyStore added in **M1** |
 
-**Net position on the canonical scheme:** **M0 done**, **M2 done**, and the foundations for
-M1/M3/M4 exist (transport, apply layer, quick inspector, validate/repair). Not yet wired: the
-**real generation loop** (M1 — still a mock timer), the **proposal/AST-diff→chips engine** (M3),
-the **runtime self-heal + history** (M4).
+**Net position on the canonical scheme (updated 2026-07-24):** **M0, M1, M2 done.**
+The **R0 four-crate refactor** landed (studio → GPUI-free `wf-core` + `wf-preview` + `wf-ai` →
+`webfluent`). **M1 (generation loop) is complete**: the app generates real pages from a prompt
+via `wf_core::generate_page` (validate + bounded self-heal) using a BYO key persisted in the OS
+keychain (`wf-ai` `KeyStore`), with the compile-verified language card and a `wf-evals` harness.
+Remaining: the **proposal/AST-diff→chips engine** (**M3** — the product's heart; the review UI is
+already built), **runtime self-heal + history** (**M4**), and minor M1 polish (test-connection
+button, model picker).
 
-### Immediate forward path
+### Build order (done → next)
 
-- **R0 — crate refactor (prerequisite):** create the 4-crate boundary — lift `WfProject`/compile
-  → `core`, preview → `preview`, revive `wf-ai`; studio depends on all three; delete the stale
-  duplicated scaffold. Keep every existing test green through the move.
-- Then resume **M1** (generation loop), **M3** (proposal/chips), **M4** (self-heal/history) below.
-
-Disposition of the M0 scaffold: **`wf-ai`** revive + own; **`wf-core`/`wf-preview`** become the
-refactor targets (their stale contents are replaced by the lifted studio-internal logic).
+- **R0 — crate refactor** ✅ — the 4-crate boundary exists (compile→`wf-core`, `wf://` serving→
+  `wf-preview`; studio owns `wf-ai`; stale scaffold replaced/retired).
+- **M1 — generation loop** ✅ — `ScriptedProvider` + `collect_text`, `generate_page`,
+  `LANGUAGE_CARD`, keychain `KeyStore`, app wiring, `wf-evals`.
+- **M3 — scoped edits + Visual Diff Review** (next; "the product's heart"): AST-diff base vs
+  proposal → chips → before/after review → accepted chips apply via `apply_edits`.
+- **M4 — guardrails + P1**: runtime self-heal + design-freeze validation, history, RTL/device,
+  try-it chips. **M5 — alpha hardening.**
 
 ---
 
