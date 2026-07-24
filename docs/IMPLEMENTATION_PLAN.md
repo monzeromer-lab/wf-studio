@@ -7,6 +7,61 @@ This plan translates the PBRD into an engineering roadmap for the chosen stack:
 
 ---
 
+## 0. Current Status & Reconciliation (updated 2026-07-24)
+
+**This document is the single source of truth.** A parallel plan grew in the engine
+repo (`spec/STUDIO_INTEGRATION_PLAN.md`) while building the engine workstream and the
+studio; it diverged on crate layout, edit model, and milestone numbering. It is now
+**superseded** and retained only as an engine-workstream history. Three reconciliation
+decisions (2026-07-24):
+
+1. **Crate layout → refactor to the canonical §3.1 four-crate layout.** The studio was
+   rewritten as a UI port and grew *studio-internal* compile/document/preview logic; the
+   M0-scaffold `core`/`preview` were bypassed and `wf-core` no longer compiles (it predates
+   the engine's `WebFluentError::EditError`). Plan: lift the studio-internal document/compile/
+   proposal/self-heal logic into GPUI-free **`core`**, preview into **`preview`**; **revive
+   and depend on `wf-ai`** (it builds and already implements §4.3 — six providers, two
+   protocols, Gemini via its OpenAI-compat endpoint); studio keeps only GPUI.
+2. **Edit model → the canonical §4.5 chips/proposal/review** (the studio UI is already built
+   for it: `ChipKind::{Text,Style,Structure,Behavior}`, the Review panel, `Permission::Review`).
+   The model returns full `.wf` (generation) or a replacement subtree (edit) as **plain fenced
+   text** — no provider tool-use — so all six providers work uniformly. `apply_edits`/`EditOp`
+   from the engine workstream is **retained as the *apply layer*** underneath chips (canonical
+   §4.5's "apply accepted chips' span edits in reverse span order"), not as a model-output format.
+3. **Milestones → the canonical M0–M5** below. The engine repo's M1–M6 numbering is retired.
+
+### Crosswalk — work already done (do not rebuild), mapped onto this plan
+
+| Built & tested (engine repo + `crates/studio`) | Canonical home | Status |
+| - | - | - |
+| Source `Span {start,end,line,col}` through lexer→AST | §5 **W1** | ✅ done |
+| Deterministic `NodeId` (`Home:2.0.3`) + `data-wf-node` (studio-mode) + node map | §5 **W2/W3**, §4.2 | ✅ done |
+| `apply_edits(source, &[EditOp])` — reverse-span span-edit engine + reparse-guard | §4.5 apply layer | ✅ done |
+| `validate_semantics` (undefined component / route / duplicate) + structured `Diagnostic`s | §4.4 validate step, §5 **W5** | ✅ done (M4.E) |
+| In-process `compile_studio` → `CompiledSite`; `wf://` serving; embedded webview; recompile-reload | §4.1 preview | ✅ done (studio-internal → lift to `preview`) |
+| `WfProject` (multi-file sources + merged offset space + node map, keep-last-good) | §3.3 `Document` | ✅ built (studio-internal → lift to `core`) |
+| Click-to-code (bridge `data-wf-node` → `resolve_node` → highlight) | §4.2, **M2** | ✅ done |
+| Inspector (color/size/weight/align/bg/radius → `apply_edits`), outline, add-blocks | **M4** Quick Inspector | ✅ done (direct AST mutation, no LLM) |
+| Review/chips UI surface (`ChipKind`, `review_items`, before/after) | §4.5 | 🟡 UI built on mock data — wire to real AST-diff in **M3** |
+| `wf-ai`: `Provider` trait, Anthropic + OpenAI-compat adapters, SSE, dedicated-thread reqwest | §4.3, **M1** | 🟡 builds; text-streaming only — add generation + revive in **M1** |
+
+**Net position on the canonical scheme:** **M0 done**, **M2 done**, and the foundations for
+M1/M3/M4 exist (transport, apply layer, quick inspector, validate/repair). Not yet wired: the
+**real generation loop** (M1 — still a mock timer), the **proposal/AST-diff→chips engine** (M3),
+the **runtime self-heal + history** (M4).
+
+### Immediate forward path
+
+- **R0 — crate refactor (prerequisite):** create the 4-crate boundary — lift `WfProject`/compile
+  → `core`, preview → `preview`, revive `wf-ai`; studio depends on all three; delete the stale
+  duplicated scaffold. Keep every existing test green through the move.
+- Then resume **M1** (generation loop), **M3** (proposal/chips), **M4** (self-heal/history) below.
+
+Disposition of the M0 scaffold: **`wf-ai`** revive + own; **`wf-core`/`wf-preview`** become the
+refactor targets (their stale contents are replaced by the lifted studio-internal logic).
+
+---
+
 ## 1. v1 Product Decisions (deltas from the PBRD)
 
 | Decision | PBRD reference | Rationale |
