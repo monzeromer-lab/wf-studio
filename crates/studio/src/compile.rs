@@ -58,6 +58,15 @@ pub fn compile_merged<'a>(
     let program = Parser::new(tokens, "<studio>")
         .parse()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Semantic gate (M4.E): the codegen is permissive and never fails, so a program
+    // that parses can still reference an undeclared component, aim a Route at a
+    // missing page, or declare a page twice — all of which only break at runtime.
+    // Reject such a compile here so a bad AI edit rolls back instead of shipping a
+    // broken preview. (Line/column are merged-source coordinates; mapping back to
+    // the source file is M4.4.)
+    if let Some(first) = webfluent::validate_semantics(&program, "<studio>").into_iter().next() {
+        return Err(anyhow::anyhow!("{first}"));
+    }
     let site = compile_studio(&program, &preview_config(), &Default::default());
     Ok((site, merged, ranges))
 }
@@ -333,6 +342,26 @@ mod tests {
     #[test]
     fn malformed_source_errors_cleanly() {
         assert!(compile_source("Page Home (path: \"/\") { Button(\"x\"").is_err());
+    }
+
+    #[test]
+    fn semantic_gate_rejects_a_parseable_but_broken_program() {
+        // Parses cleanly, but `ProfileCard` is never declared — the M4.E gate
+        // must reject it rather than compile a preview that breaks at runtime.
+        let err = compile_source("Page Home (path: \"/\") { ProfileCard() }\n").unwrap_err();
+        assert!(err.to_string().contains("ProfileCard"), "err: {err}");
+    }
+
+    #[test]
+    fn recompile_keeps_last_good_on_a_semantic_break() {
+        let mut p = WfProject::seed();
+        let good = p.compiled().pages[0].html.clone();
+        // Reparses fine, but references an undeclared component: the gate rejects
+        // it and the previous good compile survives (the transactional invariant).
+        p.set_source("src/pages/Home.wf", "Page Home (path: \"/\") { ProfileCard() }");
+        p.recompile();
+        assert!(p.error().is_some(), "semantic break must set an error");
+        assert_eq!(p.compiled().pages[0].html, good, "last good compile must survive a semantic break");
     }
 
     #[test]
