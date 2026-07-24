@@ -4,10 +4,10 @@
 //! GPUI-free by design: everything here is testable headless.
 
 mod artifacts;
-mod document;
+mod project;
 
 pub use artifacts::{Artifact, Artifacts};
-pub use document::Document;
+pub use project::{compile_merged, compile_source, FileRange, OutlineNode, ResolvedNode, WfProject};
 
 /// Compile state surfaced in the Studio top bar (FR-13).
 ///
@@ -40,7 +40,7 @@ pub struct DiagnosticInfo {
 }
 
 impl DiagnosticInfo {
-    pub(crate) fn from_error(err: &webfluent::WebFluentError) -> Self {
+    pub fn from_error(err: &webfluent::WebFluentError) -> Self {
         use webfluent::WebFluentError as E;
         match err {
             E::LexerError(d) | E::ParseError(d) => Self {

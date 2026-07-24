@@ -3,7 +3,6 @@
 
 mod app;
 mod assets;
-mod compile;
 mod ipc;
 mod site;
 mod state;

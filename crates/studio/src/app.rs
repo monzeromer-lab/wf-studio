@@ -27,7 +27,7 @@ use wry::{
 };
 
 use crate::state::*;
-use crate::{compile, ipc, site, ui};
+use crate::{ipc, site, ui};
 
 /// The custom-protocol origin for the preview webview.
 const ORIGIN: &str = "wf://localhost";
@@ -112,7 +112,7 @@ pub struct StudioApp {
     /// The embedded website-preview webview (`None` if the embed failed).
     pub preview: Option<Entity<WebView>>,
     /// The live WebFluent project: `.wf` sources + the latest compile.
-    project: compile::WfProject,
+    project: wf_core::WfProject,
     /// The output the `wf://` protocol serves, shared with the serve closure.
     /// Swapped on recompile, then the webview reloads to pick it up.
     output: Arc<RwLock<CompiledSite>>,
@@ -148,7 +148,7 @@ impl StudioApp {
 
         // Seed the in-memory WebFluent project, compile it, and publish the result
         // to the shared handle the `wf://` serve closure reads.
-        let project = compile::WfProject::seed();
+        let project = wf_core::WfProject::seed();
         match project.error() {
             Some(err) => eprintln!("wf-studio: seed project failed to compile: {err}"),
             None => eprintln!(
@@ -358,7 +358,7 @@ impl StudioApp {
     }
 
     /// The page element tree for the outline panel, derived from the live compile.
-    pub fn outline(&self) -> Vec<crate::compile::OutlineNode> {
+    pub fn outline(&self) -> Vec<wf_core::OutlineNode> {
         self.project.outline()
     }
 
@@ -1415,7 +1415,7 @@ fn boot_script() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::compile_source;
+    use wf_core::compile_source;
 
     #[test]
     fn resolve_serves_compiled_page_css_and_js() {

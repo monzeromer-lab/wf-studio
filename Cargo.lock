@@ -8229,6 +8229,7 @@ dependencies = [
 name = "wf-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -8258,6 +8259,7 @@ dependencies = [
  "raw-window-handle",
  "serde_json",
  "webfluent",
+ "wf-core",
  "x11rb",
 ]
 

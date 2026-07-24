@@ -1,7 +1,9 @@
 //! The project model and the seam to the WebFluent engine.
 //!
-//! [`WfProject`] holds the `.wf` sources in memory and the latest
-//! [`webfluent::CompiledSite`] (SSG pages, CSS, JS, node map) the preview needs.
+//! [`WfProject`] is the canonical `Document` (IMPLEMENTATION_PLAN §3.3): it holds
+//! the `.wf` sources in memory plus the latest [`webfluent::CompiledSite`] (SSG
+//! pages, CSS, JS, node map) the preview needs. GPUI-free, so it is testable
+//! headless.
 //!
 //! Sources are compiled from a single **merged** string (files concatenated in
 //! order) rather than by merging independently-parsed ASTs — because spans are
@@ -63,7 +65,7 @@ pub fn compile_merged<'a>(
     // missing page, or declare a page twice — all of which only break at runtime.
     // Reject such a compile here so a bad AI edit rolls back instead of shipping a
     // broken preview. (Line/column are merged-source coordinates; mapping back to
-    // the source file is M4.4.)
+    // the source file is a later milestone.)
     if let Some(first) = webfluent::validate_semantics(&program, "<studio>").into_iter().next() {
         return Err(anyhow::anyhow!("{first}"));
     }
@@ -72,14 +74,13 @@ pub fn compile_merged<'a>(
 }
 
 /// Compile a single `.wf` source string (convenience over [`compile_merged`]).
-#[allow(dead_code)] // handy for tests / one-off compiles
 pub fn compile_source(source: &str) -> anyhow::Result<CompiledSite> {
     Ok(compile_merged([("<studio>", source)])?.0)
 }
 
 // ─── Project model ───────────────────────────────────────
 
-/// The starter page a fresh preview boots with (M2 seed).
+/// The starter page a fresh preview boots with.
 const SEED_HOME: &str = "\
 Page Home (path: \"/\", title: \"WebFluent Studio\") {
   Container {
@@ -159,13 +160,11 @@ impl WfProject {
     }
 
     /// The error from the last recompile attempt, if it failed.
-    #[allow(dead_code)] // surfaced in the compile badge in M6
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
 
     /// Replace one source file's content (creating it if new).
-    #[allow(dead_code)] // driven by the AI / inspector edits in M3.2
     pub fn set_source(&mut self, path: impl Into<String>, content: impl Into<String>) {
         self.sources.insert(path.into(), content.into());
     }
@@ -310,7 +309,6 @@ mod tests {
             ("src/pages/B.wf", "Page B (path: \"/b\") { Text(\"bbb\") }"),
         ])
         .unwrap();
-        // Build a throwaway project view to reuse resolve_node's range logic.
         let a = site.node_map.info("A:0").unwrap();
         let b = site.node_map.info("B:0").unwrap();
         let file_of = |start: usize| ranges.iter().find(|r| start >= r.start && start < r.end).map(|r| r.path.as_str());

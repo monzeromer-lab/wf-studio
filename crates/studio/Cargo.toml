@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 webfluent.workspace = true
+wf-core.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 wry.workspace = true

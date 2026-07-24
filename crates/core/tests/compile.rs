@@ -1,48 +1,31 @@
-use wf_core::Document;
+use wf_core::compile_source;
 
 const SAMPLE: &str = include_str!("../../../assets/sample.wf");
 
 /// Golden test: the bundled Arabic sample must compile against the pinned
-/// webfluent version. This is the arbiter for sample.wf syntax.
+/// webfluent version through the studio compile path. This is the arbiter for
+/// sample.wf syntax and a guard that Arabic content survives codegen (NFR-3).
 #[test]
 fn arabic_sample_compiles_to_html() {
-    let doc = Document::new(SAMPLE);
-    let artifacts = doc.compile().unwrap_or_else(|diags| {
-        panic!("sample.wf must compile, got diagnostics: {diags:?}");
-    });
+    let site = compile_source(SAMPLE)
+        .unwrap_or_else(|e| panic!("sample.wf must compile, got: {e}"));
 
-    let index = artifacts.get("index.html").expect("index.html artifact");
-    assert_eq!(index.mime, "text/html");
-
-    let html = std::str::from_utf8(&index.bytes).expect("utf-8 html");
+    assert!(!site.pages.is_empty(), "sample produces at least one page");
+    let html = &site.pages[0].html;
     assert!(
-        html.contains("مرحباً"),
-        "Arabic content must survive codegen"
+        html.contains("ويب فلونت"),
+        "Arabic heading content must survive codegen"
     );
     assert!(
-        html.contains("<html") || html.contains("<!DOCTYPE"),
-        "render_html returns a full document"
+        html.contains("data-wf-node="),
+        "studio-mode compile stamps node ids"
     );
 }
 
 #[test]
-fn artifacts_lookup_normalizes_paths() {
-    let doc = Document::new(SAMPLE);
-    let artifacts = doc.compile().unwrap();
-    assert!(artifacts.get("/").is_some(), "root resolves to index.html");
-    assert!(artifacts.get("/index.html").is_some());
-    assert!(artifacts.get("missing.js").is_none());
-}
-
-#[test]
-fn malformed_source_yields_located_diagnostics() {
-    let doc = Document::new("Page Broken (path: \"/\" {\n    Container {\n");
-    let diags = doc.compile().expect_err("must fail");
-    assert!(!diags.is_empty());
-    let d = &diags[0];
-    assert!(!d.message.is_empty());
+fn malformed_source_is_rejected() {
     assert!(
-        d.line.is_some(),
-        "lexer/parser errors should carry a location, got: {d:?}"
+        compile_source("Page Broken (path: \"/\" {\n    Container {\n").is_err(),
+        "an unterminated header must not compile"
     );
 }

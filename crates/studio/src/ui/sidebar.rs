@@ -244,7 +244,7 @@ fn outline(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
 }
 
 /// Depth-first flatten of the outline tree into `(depth, id, label)` rows.
-fn flatten_outline(nodes: &[crate::compile::OutlineNode], depth: usize, out: &mut Vec<(usize, String, String)>) {
+fn flatten_outline(nodes: &[wf_core::OutlineNode], depth: usize, out: &mut Vec<(usize, String, String)>) {
     for n in nodes {
         out.push((depth, n.id.clone(), n.label.clone()));
         flatten_outline(&n.children, depth + 1, out);
