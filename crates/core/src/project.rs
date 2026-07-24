@@ -169,6 +169,11 @@ impl WfProject {
         self.sources.insert(path.into(), content.into());
     }
 
+    /// The current source of a file, if it exists.
+    pub fn file_source(&self, path: &str) -> Option<&str> {
+        self.sources.get(path).map(|s| s.as_str())
+    }
+
     /// Resolve a node id (from a `data-wf-node` click) to its info, source file,
     /// and exact source text. `None` if the id is unknown.
     pub fn resolve_node(&self, node_id: &str) -> Option<ResolvedNode<'_>> {

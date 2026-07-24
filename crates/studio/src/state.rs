@@ -639,17 +639,6 @@ pub const HISTORY_LOG: &[(&str, &str, bool)] = &[
     ("Project created", "5 min ago", false),
 ];
 
-/// The five proposed changes shown in the Review panel (mock `reviewData`).
-pub fn review_items(rtl: bool) -> [(ChipKind, &'static str); 5] {
-    [
-        (ChipKind::Structure, "Added header & sticky nav"),
-        (ChipKind::Structure, "Hero \u{2014} heading, copy & CTAs"),
-        (ChipKind::Text, if rtl { "Wrote Arabic hero copy" } else { "Wrote hero copy" }),
-        (ChipKind::Style, "Blue \u{2192} violet stage glow"),
-        (ChipKind::Structure, "Lineup grid + footer"),
-    ]
-}
-
 // ── Chips, edits, history, activity, messages ───────────────────────────────
 /// The four edit categories from the plan (§4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

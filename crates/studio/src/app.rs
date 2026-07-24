@@ -44,6 +44,9 @@ pub struct StudioApp {
     pub prompt: Entity<InputState>,
     pub messages: Vec<Message>,
     pub review_open: bool,
+    /// The pending AI edit under review (real chips), and the file it edits.
+    proposal: Option<wf_core::Proposal>,
+    proposal_file: Option<String>,
     pub pruning: bool,
     pub caching: bool,
     pub heal_attempts: u8,
@@ -81,7 +84,6 @@ pub struct StudioApp {
     pub edits: HashMap<SharedString, ElEdit>,
     pub added_blocks: Vec<BlockType>,
     pub event_order: [usize; 3],
-    pub keeps: [bool; 5],
     pub review_split: f32,
     // ── design-system workspace: tabs, tokens, live specimens ───────────────
     pub ds_tab: DsTab,
@@ -212,6 +214,8 @@ impl StudioApp {
             prompt,
             messages: Vec::new(),
             review_open: false,
+            proposal: None,
+            proposal_file: None,
             pruning: true,
             caching: true,
             heal_attempts: 3,
@@ -244,7 +248,6 @@ impl StudioApp {
             edits: HashMap::new(),
             added_blocks: Vec::new(),
             event_order: [0, 1, 2],
-            keeps: [true; 5],
             review_split: 50.0,
             ds_tab: DsTab::Foundations,
             ds_sel: None,
@@ -719,7 +722,12 @@ impl StudioApp {
 
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.prompt_text(cx);
-        self.build(text, window, cx);
+        // A selected element + an instruction is a scoped edit; otherwise generate.
+        if self.generated && !self.sel_nodes.is_empty() {
+            self.edit(text, window, cx);
+        } else {
+            self.build(text, window, cx);
+        }
     }
     pub fn run_suggestion(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.build(text.to_string(), window, cx);
@@ -940,37 +948,154 @@ impl StudioApp {
         }));
     }
 
+    /// A scoped AI edit of the selected element: run `edit_node` off-thread, diff
+    /// the result into a `Proposal`, and open the review panel with real chips.
+    pub fn edit(&mut self, instruction: String, window: &mut Window, cx: &mut Context<Self>) {
+        let instruction = instruction.trim().to_string();
+        if instruction.is_empty() || self.busy {
+            return;
+        }
+        let Some(node_id) = self.sel_nodes.first().cloned() else {
+            return self.build(instruction, window, cx);
+        };
+        let Some(resolved) = self.project.resolve_node(&node_id) else { return };
+        let file = resolved.file.clone();
+        let Some(base) = self.project.file_source(&file).map(str::to_string) else { return };
+
+        let key = self.key_text(cx).trim().to_string();
+        if key.is_empty() {
+            self.push_msg(Role::Assistant, "Add a provider API key in Settings, then send your edit again.");
+            self.show_toast(ToastTone::Idle, "No API key \u{2014} add one in Settings.", cx);
+            cx.notify();
+            return;
+        }
+        self.save_current_key(cx);
+
+        let kind = self.provider_kind();
+        let mut config = wf_core::GenConfig::for_model(kind.default_model());
+        config.max_tokens = 8192;
+        let provider = wf_ai::provider_for(kind, key);
+        let node_id = node_id.to_string();
+
+        self.push_msg(Role::User, instruction.clone());
+        self.set_prompt("", window, cx);
+        self.busy = true;
+        self.status = Status::Compiling;
+        cx.notify();
+
+        self.pipeline_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wf_core::edit_node(&*provider, &base, &node_id, &instruction, &config) })
+                .await;
+            let _ = this.update(cx, |a, cx| {
+                a.busy = false;
+                match result {
+                    Ok(outcome) => {
+                        let base_now = a.project.file_source(&file).unwrap_or_default().to_string();
+                        match wf_core::Proposal::new(base_now, outcome.source) {
+                            Ok(proposal) => {
+                                let n = proposal.len();
+                                a.proposal = Some(proposal);
+                                a.proposal_file = Some(file);
+                                a.selection.clear();
+                                a.sel_nodes.clear();
+                                a.highlight_nodes(cx);
+                                a.review_open = true;
+                                a.status = Status::Compiled;
+                                let msg = if n == 0 {
+                                    "That already looks the way you asked — no changes needed.".to_string()
+                                } else {
+                                    format!("I prepared {n} change(s) — review and keep the ones you want on the right.")
+                                };
+                                a.push_msg(Role::Assistant, msg);
+                            }
+                            Err(e) => {
+                                a.status = Status::Error;
+                                a.push_msg(Role::Assistant, format!("I made the edit but couldn't diff it: {e}"));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        a.status = Status::Error;
+                        a.push_msg(Role::Assistant, format!("I couldn't make that edit: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     // ── review ───────────────────────────────────────────────────────────────
+    /// The review chips to render: `(kind, label, accepted)` from the pending proposal.
+    pub fn review_chips(&self) -> Vec<(ChipKind, SharedString, bool)> {
+        match &self.proposal {
+            Some(p) => p
+                .chips()
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (map_chip_kind(c.kind), SharedString::from(c.label.clone()), p.is_accepted(i)))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
     pub fn kept_count(&self) -> usize {
-        self.keeps.iter().filter(|k| **k).count()
+        self.proposal.as_ref().map(|p| p.accepted_count()).unwrap_or(0)
     }
     pub fn toggle_keep(&mut self, i: usize, cx: &mut Context<Self>) {
-        if let Some(k) = self.keeps.get_mut(i) {
-            *k = !*k;
+        if let Some(p) = self.proposal.as_mut() {
+            p.toggle(i);
             cx.notify();
         }
     }
     pub fn review_keep_all(&mut self, cx: &mut Context<Self>) {
-        self.keeps = [true; 5];
-        cx.notify();
+        if let Some(p) = self.proposal.as_mut() {
+            for i in 0..p.len() {
+                p.set_accepted(i, true);
+            }
+            cx.notify();
+        }
     }
     pub fn review_clear_all(&mut self, cx: &mut Context<Self>) {
-        self.keeps = [false; 5];
-        cx.notify();
+        if let Some(p) = self.proposal.as_mut() {
+            for i in 0..p.len() {
+                p.set_accepted(i, false);
+            }
+            cx.notify();
+        }
     }
     pub fn apply_review(&mut self, cx: &mut Context<Self>) {
-        self.review_open = false;
-        self.selection.clear();
-        self.status = Status::Compiled;
-        self.sync_preview(cx);
-        self.show_toast(ToastTone::Success, "Changes applied \u{b7} saved to version history.", cx);
+        let Some(file) = self.proposal_file.clone() else {
+            self.review_open = false;
+            cx.notify();
+            return;
+        };
+        let applied = match self.proposal.as_ref() {
+            Some(p) => p.apply_accepted().map(|src| (src, p.accepted_count())),
+            None => return,
+        };
+        match applied {
+            Ok((source, count)) => {
+                self.project.set_source(&file, source);
+                self.recompile_and_reload(cx);
+                self.proposal = None;
+                self.proposal_file = None;
+                self.review_open = false;
+                self.status = Status::Compiled;
+                self.show_toast(ToastTone::Success, format!("Applied {count} change(s)."), cx);
+            }
+            Err(e) => {
+                self.push_msg(Role::Assistant, format!("Some of those changes conflicted and couldn't be applied together: {e}. Try keeping fewer, or apply all."));
+                self.show_toast(ToastTone::Idle, "Couldn't apply that combination \u{2014} see the chat.", cx);
+            }
+        }
         cx.notify();
     }
     pub fn discard_review(&mut self, cx: &mut Context<Self>) {
+        self.proposal = None;
+        self.proposal_file = None;
         self.review_open = false;
-        self.selection.clear();
         self.status = Status::Compiled;
-        self.sync_preview(cx);
         self.show_toast(ToastTone::Idle, "Changes discarded \u{2014} your design was left untouched.", cx);
         cx.notify();
     }
@@ -1441,4 +1566,14 @@ fn find_gpui_window() -> anyhow::Result<u32> {
 fn boot_script() -> String {
     // Inject the click/lifecycle bridge before the compiled site's own scripts.
     ipc::BRIDGE_JS.to_string()
+}
+
+/// Map a diff chip kind (wf-core) to the studio's review chip kind.
+fn map_chip_kind(k: wf_core::ChipKind) -> ChipKind {
+    match k {
+        wf_core::ChipKind::Text => ChipKind::Text,
+        wf_core::ChipKind::Style => ChipKind::Style,
+        wf_core::ChipKind::Structure => ChipKind::Structure,
+        wf_core::ChipKind::Behavior => ChipKind::Behavior,
+    }
 }

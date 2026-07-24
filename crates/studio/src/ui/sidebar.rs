@@ -6,7 +6,7 @@ use gpui::{App, ClickEvent, Context, Hsla, SharedString, Window, div, prelude::*
 use gpui_component::{StyledExt, h_flex, v_flex};
 
 use crate::app::StudioApp;
-use crate::state::{Align, BlockType, ChipKind, Dir, ElKind, RightMode, review_items};
+use crate::state::{Align, BlockType, ChipKind, ElKind, RightMode};
 use crate::theme;
 use crate::ui::widgets::{Btn, icon};
 
@@ -59,9 +59,8 @@ fn section_label(text: &'static str) -> impl IntoElement {
 
 // ── Review ───────────────────────────────────────────────────────────────────
 fn review(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
-    let rtl = app.dir == Dir::Rtl;
-    let items = review_items(rtl);
     let kept = app.kept_count();
+    let chips = app.review_chips();
     v_flex()
         .flex_1()
         .min_h_0()
@@ -82,7 +81,7 @@ fn review(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
                         .child(mini_btn("keep-all", "Keep all", cx.listener(|a, _, _, cx| a.review_keep_all(cx))))
                         .child(mini_btn("clear-all", "Clear all", cx.listener(|a, _, _, cx| a.review_clear_all(cx)))),
                 )
-                .child(v_flex().gap(px(8.0)).children(items.into_iter().enumerate().map(|(i, (kind, label))| review_row(i, kind, label, app.keeps[i], cx)))),
+                .child(v_flex().gap(px(8.0)).children(chips.into_iter().enumerate().map(|(i, (kind, label, on))| review_row(i, kind, label, on, cx)))),
         )
         .child(
             h_flex()
@@ -97,7 +96,7 @@ fn review(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
         )
 }
 
-fn review_row(i: usize, kind: ChipKind, label: &'static str, on: bool, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
+fn review_row(i: usize, kind: ChipKind, label: SharedString, on: bool, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
     let (tag_fg, tag_bg) = theme::chip_kind(kind);
     h_flex()
         .id(("rvrow", i))
