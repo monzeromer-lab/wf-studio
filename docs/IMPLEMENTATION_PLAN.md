@@ -45,13 +45,16 @@ decisions (2026-07-24):
 | Review/chips UI surface (`ChipKind`, `review_items`, before/after) | §4.5 | 🟡 UI built on mock data — wire to real AST-diff in **M3** |
 | `wf-ai`: `Provider` trait, Anthropic + OpenAI-compat adapters, SSE, dedicated-thread reqwest | §4.3, **M1** | ✅ owned by studio; generation loop + language card + KeyStore added in **M1** |
 
-**Net position on the canonical scheme (updated 2026-07-24):** **M0–M4 done** (bar the
-optional M3.5 before/after scrub). The **R0 four-crate refactor** landed (studio → GPUI-free
-`wf-core` + `wf-preview` + `wf-ai` → `webfluent`), and `wf-core`/`wf-ai` now carry the whole
-offline brain — generation, scoped edits, diff/chips/proposal, history, self-heal + design-freeze,
-and the eval harness — all hermetically tested; the studio wires each to the real UI. **Only
-M3.5 (scrub) and M5 (hardening) remain**, plus minor polish (test-connection button, real
-model picker).
+**Net position on the canonical scheme (updated 2026-07-24):** **M0–M4 done, and M5's
+code parts done** (M5.1 FR-6 audit, M5.2 onboarding wiring + test-connection, M5.3 packaging
+metadata + `docs/PACKAGING.md`). The **R0 four-crate refactor** landed (studio → GPUI-free
+`wf-core` + `wf-preview` + `wf-ai` → `webfluent`), and `wf-core`/`wf-ai` carry the whole offline
+brain — generation, scoped edits, diff/chips/proposal, history, self-heal + design-freeze, and
+the eval harness — all hermetically tested; the studio wires each to the real UI. **The
+pure-code product is complete.** What remains is *operational*: the per-provider eval pass (needs
+BYO keys → pick default models), building/signing the bundles (add `assets/icon.png` + a GPL-3.0
+`LICENSE`), the manual QA sweep, and shipping to alpha users. Deferred polish: the optional M3.5
+before/after scrub and a real model picker.
 
 ### Build order (done → next)
 
@@ -64,7 +67,9 @@ model picker).
 - **M4 — guardrails + P1** ✅ — history/undo/restore (FR-14), runtime self-heal + design-freeze
   via a style fingerprint (FR-19–22), try-it chips (FR-9), RTL/device toggles + the engine's W4
   logical-CSS audit (FR-11/12).
-- **M5 — alpha hardening** (next): onboarding, per-provider eval pass to pick default models,
+- **M5 — alpha hardening** — code parts ✅ (FR-6 "no code visible" audit, onboarding wiring +
+  test-connection, packaging metadata + PACKAGING.md). Operational remainder: per-provider eval
+  pass to pick default models,
   packaging, the "zero code visible" audit (FR-6).
 
 ---
