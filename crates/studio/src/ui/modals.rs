@@ -705,7 +705,7 @@ fn settings_providers(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl Into
                         .border_color(if active { theme::accent_ring() } else { theme::line() })
                         .bg(if active { theme::accent_tint() } else { theme::bg_raised() })
                         .cursor_pointer()
-                        .on_click(cx.listener(move |a, _, _, cx| a.pick_provider(id, cx)))
+                        .on_click(cx.listener(move |a, _, window, cx| a.pick_provider(id, window, cx)))
                         .child(div().size(px(28.0)).rounded(px(8.0)).bg(theme::hex(p.mono_bg)).flex().items_center().justify_center().font_family(theme::FONT_DISPLAY).font_bold().text_size(px(13.0)).text_color(theme::white(1.0)).child(p.mono))
                         .child(v_flex().flex_1().min_w_0().child(div().text_size(px(13.0)).font_semibold().text_color(theme::text_strong()).child(p.name)).child(h_flex().items_center().gap(px(5.0)).text_size(px(10.5)).text_color(theme::text_caption()).child(div().size(px(5.0)).rounded_full().bg(if active && has_key { theme::success() } else { theme::text_faint() })).child(if active && has_key { "Key saved" } else { "No key" })))
                         .when(active, |d| d.child(icon("check", 15.0, theme::accent()))),

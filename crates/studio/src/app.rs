@@ -83,7 +83,6 @@ pub struct StudioApp {
     pub event_order: [usize; 3],
     pub keeps: [bool; 5],
     pub review_split: f32,
-    pub compile_step: u8,
     // ── design-system workspace: tabs, tokens, live specimens ───────────────
     pub ds_tab: DsTab,
     pub ds_sel: Option<DsSel>,
@@ -247,7 +246,6 @@ impl StudioApp {
             event_order: [0, 1, 2],
             keeps: [true; 5],
             review_split: 50.0,
-            compile_step: 0,
             ds_tab: DsTab::Foundations,
             ds_sel: None,
             ds_rtl: false,
@@ -469,8 +467,13 @@ impl StudioApp {
     }
 
     // ── onboarding ──────────────────────────────────────────────────────────
-    pub fn pick_provider(&mut self, id: ProviderId, cx: &mut Context<Self>) {
+    pub fn pick_provider(&mut self, id: ProviderId, window: &mut Window, cx: &mut Context<Self>) {
+        // Persist the outgoing provider's key, switch, then restore the incoming
+        // provider's saved key into the field (empty if none).
+        self.save_current_key(cx);
         self.provider = id;
+        let loaded = self.keys.get(self.provider_kind()).unwrap_or_default();
+        self.api_key.update(cx, |s, cx| s.set_value(loaded, window, cx));
         cx.notify();
     }
 
@@ -680,18 +683,20 @@ impl StudioApp {
     // Cinematic workspace: build flow, review, selection, inspector, blocks
     // ════════════════════════════════════════════════════════════════════════
     pub fn compile_text(&self) -> &'static str {
-        const STEPS: [&str; 5] = [
-            "Understanding your request\u{2026}",
-            "Generating five sections\u{2026}",
-            "Compiling HTML\u{2026}",
-            "Self-healing \u{2014} repairing a broken link\u{2026}",
-            "Finishing up\u{2026}",
-        ];
-        STEPS[(self.compile_step as usize).min(4)]
+        match self.status {
+            Status::Compiling => "Generating your page\u{2026}",
+            Status::Compiled => "Your page is live",
+            Status::Error => "That didn't compile",
+            Status::Idle => "Ready when you are",
+        }
     }
     pub fn compile_sub(&self) -> &'static str {
-        const SUB: [&str; 5] = ["reading prompt", "header \u{b7} hero \u{b7} lineup \u{b7} about \u{b7} footer", "layali.webfluent.app", "retry 1 of 3 \u{b7} fixed", "done"];
-        SUB[(self.compile_step as usize).min(4)]
+        match self.status {
+            Status::Compiling => "writing WebFluent \u{b7} validating \u{b7} self-healing",
+            Status::Compiled => "click any element in the preview to tweak it",
+            Status::Error => "see the chat for what went wrong",
+            Status::Idle => "describe a site to get started",
+        }
     }
     pub fn chat_model_label(&self) -> String {
         model_def(&self.chat_model).name.replace("Claude ", "")

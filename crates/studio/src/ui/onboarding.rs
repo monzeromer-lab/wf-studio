@@ -145,7 +145,7 @@ fn step_provider(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoEleme
                     p.by,
                     app.provider == p.id,
                     p.recommended,
-                    cx.listener(move |a, _, _, cx| a.pick_provider(id, cx)),
+                    cx.listener(move |a, _, window, cx| a.pick_provider(id, window, cx)),
                 ))
             })),
         );
