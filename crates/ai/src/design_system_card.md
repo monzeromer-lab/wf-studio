@@ -12,6 +12,12 @@ A design system is a MULTI-PAGE site expressed as one file = one sequence of top
 
 Every `Route.page:` MUST name a `Page` you declare; every name is unique; every `Page` needs `path:`. A `Route` to a missing `Page`, an undeclared component, or a duplicate name → the whole output is REJECTED.
 
+**CRITICAL — STATIC RENDERING (no interpolation into styles/props):** The system renders as pre-painted STATIC HTML. `{...}` string interpolation and `for … { }` loops do NOT substitute values into the visible output, and a component prop can NEVER reach a `style { }` value. So:
+- **Colour / token swatches: write the LITERAL value inline.** Emit each swatch directly — `Container { style { background: "#7C5CFF"; height: "56px"; radius: md } }` — with the real hex. NEVER colour a swatch from a prop (`style { background: "{hex}" }` renders EMPTY), and NEVER drive a ramp with `for c in [...]`; spell out every swatch literally.
+- **Pass prop VALUES positionally, never inside a string.** `Heading(name)` / `Text(usage)` renders the prop; `Text("{usage}")` prints literal braces. A reusable swatch component may LABEL itself via `Text(name)` but cannot COLOUR itself — which is exactly why colour swatches are inlined.
+- **Every `style { }` value is a LITERAL** (`"#3b82f6"`, `"24px"`) **or a semantic token keyword** (`primary`, `surface`) — never `"{anything}"`.
+Where earlier examples below show `background: "{hex}"` or a `for` over a ramp, follow THIS rule instead: write literal, fully-expanded content. Token galleries, type specimens, and foundations are hand-written literal documentation, not parameterized templates.
+
 # GRAMMAR
 A file is a sequence of top-level declarations. Comments: `// line`, `/* block */`.
 Naming: `Page`/`Component`/`Store`/`App` are **PascalCase**; state, props, vars are **camelCase**.

@@ -838,42 +838,37 @@ impl StudioApp {
         let id = self.current_project.as_ref()?;
         self.projects.iter().find(|p| &p.id == id)
     }
+    /// The kind of the currently-open project (drives the generation system prompt).
+    fn current_kind(&self) -> Option<ProjectKind> {
+        self.current_project().map(|p| p.kind)
+    }
     pub fn open_project(&mut self, id: SharedString, cx: &mut Context<Self>) {
         let Some(p) = self.projects.iter().find(|p| p.id == id).cloned() else { return };
         self.modal = None;
         let switching = self.current_project.as_ref() != Some(&id);
-        match p.kind {
-            ProjectKind::System => {
-                // The design-system workspace keeps its own state for now
-                // (generating a DS as WebFluent is the next milestone).
-                if switching {
-                    self.stash_active_website();
-                    self.current_project = Some(id.clone());
-                    self.messages.clear();
-                    self.push_msg(Role::Assistant, "This is your design system. Tell me to add a token, restyle a component, or generate a new one \u{2014} I\u{2019}ll apply it across the kit.");
-                }
-                self.screen = Screen::DsWorkspace;
-            }
-            ProjectKind::Website => {
-                if switching {
-                    // Stash the project we're leaving, then load this one's own sources,
-                    // chat, and generated status (or a fresh starter for a first open).
-                    self.stash_active_website();
-                    let state = self.project_states.remove(&id).unwrap_or_else(|| ProjectState::starter(p.name.as_ref()));
-                    self.generated = state.generated;
-                    self.messages = state.messages;
-                    self.project.restore_sources(state.sources);
-                    self.current_project = Some(id.clone());
-                    self.clear_selection_and_review();
-                    if self.messages.is_empty() {
-                        self.push_msg(Role::Assistant, "Ask for a change, or click any element in the preview to tweak it.");
-                    }
-                }
-                self.screen = Screen::Workspace;
-                self.status = if self.generated { Status::Compiled } else { Status::Idle };
-                self.recompile_and_reload(cx);
+        if switching {
+            // Stash the project we're leaving, then load this one's own sources, chat,
+            // and generated status (or a fresh starter for a first open).
+            self.stash_active_website();
+            let state = self.project_states.remove(&id).unwrap_or_else(|| ProjectState::starter(p.name.as_ref()));
+            self.generated = state.generated;
+            self.messages = state.messages;
+            self.project.restore_sources(state.sources);
+            self.current_project = Some(id.clone());
+            self.clear_selection_and_review();
+            if self.messages.is_empty() {
+                let welcome = match p.kind {
+                    ProjectKind::System => "Describe your brand \u{2014} colors, type, the feel \u{2014} and I\u{2019}ll generate a browsable design system: token galleries, a type specimen, and a documented component library.",
+                    ProjectKind::Website => "Ask for a change, or click any element in the preview to tweak it.",
+                };
+                self.push_msg(Role::Assistant, welcome);
             }
         }
+        // Both kinds render in the same workspace + embedded preview — a design system
+        // is just a multi-page WebFluent site generated with the DS system prompt.
+        self.screen = Screen::Workspace;
+        self.status = if self.generated { Status::Compiled } else { Status::Idle };
+        self.recompile_and_reload(cx);
         cx.notify();
     }
 
@@ -883,13 +878,17 @@ impl StudioApp {
         self.save_active_project();
     }
 
-    /// Persist the currently-open website project — both to the in-memory stash (so
-    /// switching cards preserves it) and to disk as a `.wfp` bundle (so it survives
-    /// restarts). No-op unless the active project is a website.
+    /// Persist the currently-open project (website OR design system) — both to the
+    /// in-memory stash (so switching cards preserves it) and to disk as a `.wfp`
+    /// bundle (so it survives restarts). No-op when nothing is open.
     fn save_active_project(&mut self) {
         let Some(id) = self.current_project.clone() else { return };
-        let Some(p) = self.projects.iter().find(|p| p.id == id && p.kind == ProjectKind::Website).cloned() else {
+        let Some(p) = self.projects.iter().find(|p| p.id == id).cloned() else {
             return;
+        };
+        let kind = match p.kind {
+            ProjectKind::System => "system",
+            ProjectKind::Website => "website",
         };
         let sources = self.project.snapshot();
         self.project_states.insert(
@@ -901,7 +900,7 @@ impl StudioApp {
             version: 1,
             id: id.to_string(),
             name: p.name.to_string(),
-            kind: "website".to_string(),
+            kind: kind.to_string(),
             created,
             updated: crate::store::now_secs(),
             sources,
@@ -1448,8 +1447,12 @@ impl StudioApp {
         let mut config = wf_core::GenConfig::for_model(self.current_model());
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
+        // A design-system project generates a browsable multi-page DS site; a website
+        // project a page. Pick the matching system prompt.
+        let is_ds = self.current_kind() == Some(ProjectKind::System);
+        let card = if is_ds { wf_ai::DESIGN_SYSTEM_CARD } else { wf_ai::LANGUAGE_CARD };
 
-        info!(provider = ?kind, model = %self.current_model(), prompt_len = prompt.len(), prompt = %log_preview(&prompt, 400), "build: generating page");
+        info!(provider = ?kind, model = %self.current_model(), design_system = is_ds, prompt_len = prompt.len(), prompt = %log_preview(&prompt, 400), "build: generating");
         trace!(prompt_full = %prompt, "build: full prompt");
         self.busy = true;
         self.status = Status::Compiling;
@@ -1458,7 +1461,7 @@ impl StudioApp {
         self.pipeline_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { wf_core::generate_page(&*provider, wf_ai::LANGUAGE_CARD, &prompt, &config) })
+                .spawn(async move { wf_core::generate_page(&*provider, card, &prompt, &config) })
                 .await;
             let _ = this.update(cx, |a, cx| {
                 a.busy = false;

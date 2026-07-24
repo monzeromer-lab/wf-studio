@@ -23,7 +23,7 @@ use tracing::{debug, error, trace, warn};
 pub use anthropic::AnthropicAdapter;
 pub use keystore::{default_key_store, ChainKeyStore, EnvKeyStore, InMemoryKeyStore, KeyStore, KeyringStore};
 pub use openai::OpenAiCompatAdapter;
-pub use prompt::LANGUAGE_CARD;
+pub use prompt::{DESIGN_SYSTEM_CARD, LANGUAGE_CARD};
 pub use scripted::ScriptedProvider;
 
 /// The six launch providers.
