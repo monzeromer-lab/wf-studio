@@ -409,6 +409,29 @@ impl StudioApp {
         self.sel_nodes.iter().any(|s| s.as_ref() == id)
     }
 
+    /// The leading token of the selected element's source — its element type.
+    fn selected_element_name(&self) -> Option<String> {
+        let id = self.sel_nodes.first()?;
+        let r = self.project.resolve_node(id)?;
+        let name = r
+            .source_slice
+            .split(|c: char| c == '(' || c == ' ' || c == '{' || c == '\n')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// One-tap "try it" edit suggestions for the selected element (FR-9):
+    /// `(label, instruction)`.
+    pub fn try_it_suggestions(&self) -> Vec<(SharedString, SharedString)> {
+        let Some(name) = self.selected_element_name() else { return Vec::new() };
+        crate::state::try_it_suggestions(&name)
+            .iter()
+            .map(|(l, i)| (SharedString::from(*l), SharedString::from(*i)))
+            .collect()
+    }
+
     /// Outline the currently-selected nodes in the preview via `evaluate_script`.
     fn highlight_nodes(&self, cx: &mut Context<Self>) {
         let Some(preview) = &self.preview else { return };

@@ -632,6 +632,40 @@ pub fn compile_log() -> Vec<CompileEntry> {
     ]
 }
 
+/// One-tap "try it" edit suggestions per element type (FR-9): `(label, the
+/// instruction sent to the scoped-edit loop)`. A generic fallback covers the rest.
+pub fn try_it_suggestions(element: &str) -> &'static [(&'static str, &'static str)] {
+    match element {
+        "Button" | "IconButton" => &[
+            ("Make it primary", "make this button use the primary color"),
+            ("Make it large", "make this button large"),
+            ("Add an icon", "add a fitting leading icon to this button"),
+        ],
+        "Heading" => &[
+            ("Make it bigger", "make this heading one level larger"),
+            ("Center it", "center this heading"),
+        ],
+        "Text" => &[
+            ("Muted", "make this text muted"),
+            ("Emphasize", "make this text bold"),
+            ("Center it", "center this text"),
+        ],
+        "Container" | "Row" | "Column" | "Stack" | "Grid" | "Card" => &[
+            ("Add padding", "add comfortable padding inside this element"),
+            ("Center contents", "center the contents"),
+            ("Add a subtle background", "give this a subtle surface background"),
+        ],
+        "Image" => &[
+            ("Round the corners", "give this image rounded corners"),
+            ("Add a shadow", "give this image a soft shadow"),
+        ],
+        _ => &[
+            ("Add spacing", "add a little spacing around this element"),
+            ("Restyle it", "give this element a cleaner, more modern style without changing its content"),
+        ],
+    }
+}
+
 // ── Chips, edits, history, activity, messages ───────────────────────────────
 /// The four edit categories from the plan (§4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

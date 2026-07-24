@@ -149,6 +149,10 @@ fn inspector(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
         let cur = edit.radius.unwrap_or(if is_btn { 40.0 } else { 18.0 });
         body = body.child(stepper_control("Corner radius", cur, 0.0, 40.0, 2.0, |a, v, cx| a.set_radius(v, cx), cx));
     }
+    let suggestions = app.try_it_suggestions();
+    if !suggestions.is_empty() {
+        body = body.child(try_it_section(suggestions, cx));
+    }
     body = body.child(reset_btn(cx));
 
     v_flex()
@@ -156,6 +160,30 @@ fn inspector(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
         .min_h_0()
         .child(head("sliders", app.sel_label(&key)).child(close_x("insp-close", cx.listener(|a, _, _, cx| a.deselect(cx)))))
         .child(body)
+}
+
+/// "Try it" one-tap edit suggestions (FR-9): each runs a scoped AI edit on the
+/// selected element, opening the review panel with the proposed change.
+fn try_it_section(suggestions: Vec<(SharedString, SharedString)>, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    v_flex().gap(px(9.0)).child(section_label("TRY IT")).child(
+        h_flex().flex_wrap().gap(px(8.0)).children(suggestions.into_iter().enumerate().map(|(i, (label, instr))| {
+            div()
+                .id(("tryit", i))
+                .px(px(11.0))
+                .py(px(7.0))
+                .rounded(px(theme::RADIUS_MD))
+                .border_1()
+                .border_dashed()
+                .border_color(theme::line_bright())
+                .text_size(px(12.0))
+                .font_semibold()
+                .text_color(theme::text_muted())
+                .cursor_pointer()
+                .hover(|s| s.border_color(theme::accent_ring()).text_color(theme::text_strong()))
+                .child(label)
+                .on_click(cx.listener(move |a, _, window, cx| a.edit(instr.to_string(), window, cx)))
+        })),
+    )
 }
 
 // ── Multi-select ─────────────────────────────────────────────────────────────
