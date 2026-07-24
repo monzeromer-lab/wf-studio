@@ -49,6 +49,8 @@ pub struct StudioApp {
     proposal: Option<wf_core::Proposal>,
     proposal_file: Option<String>,
     proposal_node: Option<String>,
+    /// The source we last attempted to self-heal (attempt each version once).
+    heal_tried: Option<String>,
     pub pruning: bool,
     pub caching: bool,
     pub heal_attempts: u8,
@@ -223,6 +225,7 @@ impl StudioApp {
             proposal: None,
             proposal_file: None,
             proposal_node: None,
+            heal_tried: None,
             pruning: true,
             caching: true,
             heal_attempts: 3,
@@ -712,8 +715,66 @@ impl StudioApp {
                     self.sync_preview(cx);
                     self.highlight_nodes(cx);
                 }
+                ipc::Event::RuntimeError { message } => self.on_runtime_error(message, cx),
             }
         }
+    }
+
+    /// A preview runtime error: try to self-heal the page — fix the bug without
+    /// changing the design (§4.6). Bounded: each source version is attempted once,
+    /// so a fix that doesn't clear the error never loops.
+    fn on_runtime_error(&mut self, message: String, cx: &mut Context<Self>) {
+        if self.busy || !self.generated || self.proposal.is_some() {
+            return;
+        }
+        let file = "src/pages/Home.wf".to_string();
+        let Some(source) = self.project.file_source(&file).map(str::to_string) else { return };
+        // Attempt each exact source only once (a give-up leaves it, so no re-heal loop).
+        if self.heal_tried.as_deref() == Some(&source) {
+            return;
+        }
+        self.heal_tried = Some(source.clone());
+        let key = self.key_text(cx).trim().to_string();
+        if key.is_empty() {
+            return; // no key — nothing we can do; stay quiet
+        }
+
+        let kind = self.provider_kind();
+        let mut config = wf_core::GenConfig::for_model(kind.default_model());
+        config.max_tokens = 8192;
+        let provider = wf_ai::provider_for(kind, key);
+
+        self.busy = true;
+        self.status = Status::Compiling;
+        self.push_msg(Role::Assistant, "Caught a runtime error in the preview — trying to fix it without touching your design\u{2026}");
+        cx.notify();
+
+        self.pipeline_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wf_core::self_heal(&*provider, &source, &message, &config) })
+                .await;
+            let _ = this.update(cx, |a, cx| {
+                a.busy = false;
+                match result {
+                    Ok(outcome) => {
+                        a.project.set_source(&file, outcome.source);
+                        a.recompile_and_reload(cx);
+                        a.history.checkpoint("Self-healed a runtime error", a.project.snapshot());
+                        a.status = Status::Compiled;
+                        a.push_msg(Role::Assistant, format!("Fixed it in {} attempt(s) — your design was untouched.", outcome.attempts));
+                        a.show_toast(ToastTone::Success, "Self-healed a runtime error \u{2014} your design was untouched.", cx);
+                    }
+                    Err(e) => {
+                        // Non-blocking: flag it and keep the app usable (FR-22).
+                        a.status = Status::Error;
+                        a.push_msg(Role::Assistant, format!("A runtime error needs your attention — I couldn't fix it safely without changing the design: {e}"));
+                        a.show_toast(ToastTone::Idle, "A runtime error needs attention \u{2014} see the chat.", cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
     }
 
 

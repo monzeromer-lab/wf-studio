@@ -49,6 +49,8 @@ pub enum Event {
     Deselect,
     /// The page finished loading — push the current state into it.
     PageLoaded,
+    /// The preview threw a runtime error — a candidate for self-healing (§4.6).
+    RuntimeError { message: String },
 }
 
 /// Parse one `{ kind, payload }` JSON message from the page.
@@ -60,7 +62,16 @@ fn parse(message: &str) -> Option<Event> {
     let kind = value.get("kind").and_then(|k| k.as_str()).unwrap_or("");
     match kind {
         "page-loaded" => Some(Event::PageLoaded),
-        "runtime-error" | "console-error" => {
+        "runtime-error" => {
+            let message = value
+                .get("payload")
+                .and_then(|p| p.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("runtime error")
+                .to_string();
+            Some(Event::RuntimeError { message })
+        }
+        "console-error" => {
             let payload = value.get("payload").cloned().unwrap_or_default();
             eprintln!("wf-studio bridge {kind}: {payload}");
             None
