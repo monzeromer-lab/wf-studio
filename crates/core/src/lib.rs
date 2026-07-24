@@ -4,10 +4,12 @@
 //! GPUI-free by design: everything here is testable headless.
 
 mod artifacts;
+mod diff;
 mod generate;
 mod project;
 
 pub use artifacts::{Artifact, Artifacts};
+pub use diff::{diff, Chip, ChipKind};
 pub use generate::{edit_node, generate_page, EditOutcome, GenConfig, GenError, GenOutcome};
 pub use project::{compile_merged, compile_source, FileRange, OutlineNode, ResolvedNode, WfProject};
 
