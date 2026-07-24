@@ -61,6 +61,11 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
 
 fn right_cluster(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
     let mut row = h_flex().items_center().gap(px(8.0));
+    // No studio backend/account yet — surface that we're running locally, beside
+    // the compile-status/activity log.
+    if app.offline {
+        row = row.child(offline_pill());
+    }
     match app.screen {
         Screen::Home => {
             row = row
@@ -84,6 +89,21 @@ fn right_cluster(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoEleme
         Screen::Login | Screen::Onboarding => {}
     }
     row
+}
+
+/// Local/offline indicator — the studio has no backend or account yet.
+fn offline_pill() -> impl IntoElement {
+    h_flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(10.0))
+        .h(px(26.0))
+        .rounded_full()
+        .bg(theme::bg_raised())
+        .border_1()
+        .border_color(theme::line())
+        .child(div().size(px(6.0)).rounded_full().bg(theme::warning()))
+        .child(div().text_size(px(11.5)).font_semibold().text_color(theme::text_muted()).child("Offline"))
 }
 
 fn profile(cx: &mut Context<StudioApp>) -> impl IntoElement {

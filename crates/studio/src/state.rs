@@ -578,51 +578,18 @@ pub const COLLABORATORS: &[Collaborator] = &[
     Collaborator { initials: "AH", name: "Ali Hassan", owner: false, online: false },
 ];
 
-/// Build-log entry (Compile-log modal, static demo data).
+/// Build-log entry (Compile-log / Activity modal). Populated from real compiles
+/// on `StudioApp` (see `record_compile`), newest first.
+#[derive(Clone)]
 pub struct CompileEntry {
-    pub title: &'static str,
-    pub ms: &'static str,
-    pub time: &'static str,
-    pub note: &'static str,
+    pub title: SharedString,
+    pub ms: SharedString,
+    pub time: SharedString,
+    pub note: SharedString,
     pub note_tone: Tone,
     pub icon: &'static str,
     pub dot: fn() -> Hsla,
-    pub detail: Option<&'static str>,
-}
-
-pub fn compile_log() -> Vec<CompileEntry> {
-    vec![
-        CompileEntry {
-            title: "Compiled successfully",
-            ms: "3.8s",
-            time: "Just now",
-            note: "Self-healed 1 issue \u{2014} broken nav link repaired (retry 1 of 3).",
-            note_tone: Tone::Warn,
-            icon: "shield",
-            dot: theme::warning,
-            detail: Some("line 42 \u{b7} <a href> pointed to a missing anchor #book \u{2192} rewrote to #reserve"),
-        },
-        CompileEntry {
-            title: "Compiled successfully",
-            ms: "4.1s",
-            time: "2 min ago",
-            note: "5 sections generated \u{b7} no errors.",
-            note_tone: Tone::Ok,
-            icon: "check-circle",
-            dot: theme::success,
-            detail: None,
-        },
-        CompileEntry {
-            title: "Build failed",
-            ms: "1.2s",
-            time: "5 min ago",
-            note: "Provider rate limit (429) \u{2014} retried and recovered.",
-            note_tone: Tone::Err,
-            icon: "close",
-            dot: theme::danger,
-            detail: Some("Anthropic API \u{b7} 429 too_many_requests \u{b7} backed off 800ms, succeeded on retry 2"),
-        },
-    ]
+    pub detail: Option<SharedString>,
 }
 
 /// One-tap "try it" edit suggestions per element type (FR-9): `(label, the

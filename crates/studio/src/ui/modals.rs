@@ -5,7 +5,7 @@ use gpui::{AnyElement, App, ClickEvent, Context, ElementId, Hsla, SharedString, 
 use gpui_component::{StyledExt, h_flex, input::Input, v_flex};
 
 use crate::app::StudioApp;
-use crate::state::{ConnMode, ExportKind, LinkAccess, Modal, PROVIDERS, ProjectKind, PublishTab, SettingsTab, ShareMenu, ShareRole, compile_log};
+use crate::state::{ConnMode, ExportKind, LinkAccess, Modal, PROVIDERS, ProjectKind, PublishTab, SettingsTab, ShareMenu, ShareRole};
 use crate::theme;
 use crate::ui::widgets::{Btn, Tone, avatar, icon};
 
@@ -17,7 +17,7 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
         Modal::NewProject => new_project(app, cx).into_any_element(),
         Modal::Exit => exit(cx).into_any_element(),
         Modal::SwapDs => swap_ds(app, cx).into_any_element(),
-        Modal::Compile => compile(cx).into_any_element(),
+        Modal::Compile => compile(app, cx).into_any_element(),
         Modal::Publish => publish(app, cx).into_any_element(),
         Modal::Share => share(app, cx).into_any_element(),
         Modal::Settings => settings(app, cx).into_any_element(),
@@ -188,10 +188,10 @@ fn swap_ds(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
 }
 
 // ── Compile log ───────────────────────────────────────────────────────────────
-fn compile(cx: &mut Context<StudioApp>) -> impl IntoElement {
+fn compile(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
     card(500.0)
-        .child(h_flex().w_full().px(px(24.0)).pt(px(22.0)).items_start().gap(px(13.0)).child(tile("check-circle", theme::bg_raised(), theme::success())).child(heading("Compile log", "Every build, its timing, and any errors WebFluent hit or healed.")).child(close_btn(cx)))
-        .child(v_flex().px(px(24.0)).pt(px(16.0)).pb(px(22.0)).gap(px(10.0)).children(compile_log().into_iter().map(|c| {
+        .child(h_flex().w_full().px(px(24.0)).pt(px(22.0)).items_start().gap(px(13.0)).child(tile("check-circle", theme::bg_raised(), theme::success())).child(heading("Activity", "Every build in this session — what compiled, and any errors WebFluent hit or healed.")).child(close_btn(cx)))
+        .child(v_flex().px(px(24.0)).pt(px(16.0)).pb(px(22.0)).gap(px(10.0)).children(app.compile_log().into_iter().map(|c| {
             let note_color = match c.note_tone {
                 crate::state::Tone::Err => theme::danger(),
                 crate::state::Tone::Warn => theme::warning(),

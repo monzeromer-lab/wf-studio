@@ -43,6 +43,12 @@ pub struct StudioApp {
     pub device: Device,
     pub generated: bool,
     pub status: Status,
+    /// Running local — no studio backend/account yet (login & publish are mocks).
+    /// Shown as an "Offline" badge beside the compile status.
+    pub offline: bool,
+    /// Real build/activity log — one entry per compile (seed, edit, generate,
+    /// self-heal, apply), newest first. Replaces the former static demo data.
+    pub compile_log: Vec<crate::state::CompileEntry>,
     pub busy: bool,
     pub prompt: Entity<InputState>,
     pub messages: Vec<Message>,
@@ -228,7 +234,10 @@ impl StudioApp {
         }
 
         Self {
-            screen: Screen::Login,
+            // Login is a mock until the studio backend exists — start straight in the
+            // (local, offline) workspace home. See `offline`.
+            screen: Screen::Home,
+            offline: true,
             ob_step: 0,
             provider: ProviderId::Anthropic,
             api_key,
@@ -237,6 +246,7 @@ impl StudioApp {
             device: Device::Desktop,
             generated: false,
             status: Status::Idle,
+            compile_log: vec![Self::compile_entry(true, "Started your project", None)],
             busy: false,
             prompt,
             messages: Vec::new(),
@@ -423,12 +433,45 @@ impl StudioApp {
     /// Recompile the project, publish the new output to the shared serve handle,
     /// and reload the preview so it shows the result. The AI / inspector edit
     /// flows drive this in M3; for now it is the manual recompile hook.
+    /// Build one Activity-log entry with a real wall-clock (UTC) timestamp.
+    fn compile_entry(ok: bool, note: impl Into<SharedString>, detail: Option<SharedString>) -> CompileEntry {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let tod = secs % 86_400;
+        let (title, icon, dot): (&str, &str, fn() -> gpui::Hsla) = if ok {
+            ("Compiled", "check-circle", crate::theme::success)
+        } else {
+            ("Build failed", "close", crate::theme::danger)
+        };
+        CompileEntry {
+            title: title.into(),
+            ms: "".into(),
+            time: format!("{:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60).into(),
+            note: note.into(),
+            note_tone: if ok { Tone::Ok } else { Tone::Err },
+            icon,
+            dot,
+            detail,
+        }
+    }
+    /// Prepend a real compile/activity entry (newest first, capped at 30). Called at
+    /// the meaningful build boundaries (generate, apply, self-heal, compile failure).
+    fn record_compile(&mut self, ok: bool, note: impl Into<SharedString>, detail: Option<SharedString>) {
+        self.compile_log.insert(0, Self::compile_entry(ok, note, detail));
+        self.compile_log.truncate(30);
+    }
+    /// The real Activity-log entries for the modal, newest first.
+    pub fn compile_log(&self) -> Vec<CompileEntry> {
+        self.compile_log.clone()
+    }
+
     pub fn recompile_and_reload(&mut self, cx: &mut Context<Self>) {
         self.project.recompile();
         // A failed recompile keeps the last-good CompiledSite, so reloading would just
         // re-serve identical bytes with no feedback — surface it instead.
         if let Some(err) = self.project.error() {
+            let err = err.to_string();
             error!(%err, "recompile failed, preview left unchanged");
+            self.record_compile(false, "Edit didn't compile", Some(err.into()));
             self.show_toast(ToastTone::Idle, "That change didn't compile \u{2014} preview left as-is.", cx);
             return;
         }
@@ -938,6 +981,7 @@ impl StudioApp {
                         trace!(source_full = %outcome.source, "self_heal: full healed source");
                         a.project.set_source(&file, outcome.source);
                         a.recompile_and_reload(cx);
+                        a.record_compile(true, format!("Self-healed a runtime error in {} attempt(s)", outcome.attempts), None);
                         a.history.checkpoint("Self-healed a runtime error", a.project.snapshot());
                         a.status = Status::Compiled;
                         a.push_msg(Role::Assistant, format!("Fixed it in {} attempt(s) — your design was untouched.", outcome.attempts));
@@ -1246,6 +1290,11 @@ impl StudioApp {
                                 a.status = Status::Compiled;
                                 let healed = outcome.attempts.saturating_sub(1);
                                 info!(healed, "build: page compiled and live");
+                                a.record_compile(
+                                    true,
+                                    format!("Generated your page · {} node(s)", a.project.compiled().node_map.len()),
+                                    (healed > 0).then(|| format!("self-healed {healed} compile issue(s)").into()),
+                                );
                                 let note = if healed > 0 {
                                     format!("Done \u{2014} your page is live (self-healed {healed} compile issue(s) along the way). Click any part of the preview to tweak it.")
                                 } else {
@@ -1438,6 +1487,7 @@ impl StudioApp {
                     *out = CompiledSite::default();
                 }
                 self.recompile_and_reload(cx);
+                self.record_compile(true, format!("Applied {count} change(s) from review"), None);
                 self.history.checkpoint(format!("Applied {count} change(s)"), self.project.snapshot());
                 self.proposal = None;
                 self.proposal_file = None;
