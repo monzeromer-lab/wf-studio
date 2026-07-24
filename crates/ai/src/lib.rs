@@ -11,6 +11,7 @@
 
 mod anthropic;
 mod openai;
+mod prompt;
 mod scripted;
 mod sse;
 mod stream;
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 pub use anthropic::AnthropicAdapter;
 pub use openai::OpenAiCompatAdapter;
+pub use prompt::LANGUAGE_CARD;
 pub use scripted::ScriptedProvider;
 
 /// The six launch providers.
