@@ -276,6 +276,17 @@ impl StudioApp {
     pub fn provider(&self) -> &'static Provider {
         provider(self.provider)
     }
+    /// The selected provider as the AI-crate kind.
+    fn provider_kind(&self) -> wf_ai::ProviderKind {
+        match self.provider {
+            ProviderId::Anthropic => wf_ai::ProviderKind::Anthropic,
+            ProviderId::OpenAI => wf_ai::ProviderKind::OpenAi,
+            ProviderId::Gemini => wf_ai::ProviderKind::Gemini,
+            ProviderId::DeepSeek => wf_ai::ProviderKind::DeepSeek,
+            ProviderId::Kimi => wf_ai::ProviderKind::Kimi,
+            ProviderId::Glm => wf_ai::ProviderKind::Glm,
+        }
+    }
     pub fn prompt_text(&self, cx: &Context<Self>) -> String {
         self.prompt.read(cx).value().to_string()
     }
@@ -822,43 +833,78 @@ impl StudioApp {
         (sel.kind == DsSelKind::Comp).then(|| ds_comp(sel.id.as_ref())).flatten()
     }
 
+    /// Generate a page from the prompt: call the selected provider with the
+    /// language card, validate + self-heal the reply (in `wf-core`), then swap
+    /// the Home source and reload the preview. BYOK — a provider key is the only
+    /// setup (IMPLEMENTATION_PLAN M1, Flow A). The loop blocks (the provider
+    /// streams on its own thread), so it runs on the background executor and the
+    /// result is applied back on the UI thread.
     pub fn build(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let t = text.trim().to_string();
-        if t.is_empty() || self.busy {
+        let prompt = text.trim().to_string();
+        if prompt.is_empty() || self.busy {
             return;
         }
-        self.push_msg(Role::User, t);
+        self.push_msg(Role::User, prompt.clone());
         self.set_prompt("", window, cx);
         self.selection.clear();
+        self.sel_nodes.clear();
         self.chat_menu = None;
+
+        let key = self.key_text(cx).trim().to_string();
+        if key.is_empty() {
+            self.push_msg(Role::Assistant, "Add a provider API key in Settings, then send your prompt again.");
+            self.show_toast(ToastTone::Idle, "No API key \u{2014} add one in Settings to generate.", cx);
+            cx.notify();
+            return;
+        }
+
+        let kind = self.provider_kind();
+        let mut config = wf_core::GenConfig::for_model(kind.default_model());
+        config.max_tokens = 8192;
+        let provider = wf_ai::provider_for(kind, key);
+
         self.busy = true;
-        self.compile_step = 0;
         self.status = Status::Compiling;
         cx.notify();
+
         self.pipeline_task = Some(cx.spawn(async move |this, cx| {
-            for i in 0..5u8 {
-                if this.update(cx, |a, cx| {
-                    a.compile_step = i;
-                    cx.notify();
-                }).is_err()
-                {
-                    return;
-                }
-                cx.background_executor().timer(Duration::from_millis(480)).await;
-            }
+            let result = cx
+                .background_executor()
+                .spawn(async move { wf_core::generate_page(&*provider, wf_ai::LANGUAGE_CARD, &prompt, &config) })
+                .await;
             let _ = this.update(cx, |a, cx| {
                 a.busy = false;
-                a.generated = true;
-                a.review_open = true;
-                a.status = Status::Compiled;
-                a.keeps = [true; 5];
-                a.review_split = 50.0;
-                a.push_msg(
-                    Role::Assistant,
-                    "Done \u{2014} your site is live with five sections: header, hero, lineup, about and footer. I caught and repaired a broken link while compiling. Click any part of the preview to tweak it.",
-                );
-                a.sync_preview(cx);
-                a.show_toast(ToastTone::Success, "Self-healing repaired 1 issue while compiling \u{2014} your design was untouched.", cx);
+                match result {
+                    Ok(outcome) => {
+                        a.project.set_source("src/pages/Home.wf", outcome.source);
+                        a.recompile_and_reload(cx);
+                        // recompile validates again; it should agree with generation.
+                        let compile_err = a.project.error().map(|e| e.to_string());
+                        match compile_err {
+                            Some(err) => {
+                                a.status = Status::Error;
+                                a.push_msg(Role::Assistant, format!("The page was generated but the preview failed to compile: {err}"));
+                            }
+                            None => {
+                                a.generated = true;
+                                a.status = Status::Compiled;
+                                let healed = outcome.attempts.saturating_sub(1);
+                                let note = if healed > 0 {
+                                    format!("Done \u{2014} your page is live (self-healed {healed} compile issue(s) along the way). Click any part of the preview to tweak it.")
+                                } else {
+                                    "Done \u{2014} your page is live. Click any part of the preview to tweak it.".to_string()
+                                };
+                                a.push_msg(Role::Assistant, note);
+                                a.sync_preview(cx);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        a.status = Status::Error;
+                        a.push_msg(Role::Assistant, format!("I couldn't build a working page: {e}"));
+                        a.show_toast(ToastTone::Idle, "Generation failed \u{2014} see the chat for details.", cx);
+                    }
+                }
                 cx.notify();
             });
         }));

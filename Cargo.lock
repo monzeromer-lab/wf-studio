@@ -8260,6 +8260,7 @@ dependencies = [
  "raw-window-handle",
  "serde_json",
  "webfluent",
+ "wf-ai",
  "wf-core",
  "wf-preview",
  "x11rb",
