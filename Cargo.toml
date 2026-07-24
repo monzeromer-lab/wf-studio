@@ -33,6 +33,10 @@ async-channel = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 tokio = { version = "1", features = ["rt", "net", "time"] }
 futures-util = "0.3"
+# BYO-key storage in the OS credential store. linux-keyutils is headless-safe (no
+# D-Bus); a desktop build can switch to the secret-service backend for cross-reboot
+# persistence — the KeyStore trait makes that a one-line swap.
+keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"] }
 
 # GPUI is unusably slow fully unoptimized; keep our crates fast to compile
 # but optimize dependencies.

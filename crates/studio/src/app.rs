@@ -33,6 +33,9 @@ pub struct StudioApp {
     pub ob_step: u8,
     pub provider: ProviderId,
     pub api_key: Entity<InputState>,
+    /// BYO-key store (OS keychain → env): restores the selected provider's key
+    /// into `api_key` on startup and persists a key when generation uses it.
+    keys: Box<dyn wf_ai::KeyStore>,
     pub dir: Dir,
     pub device: Device,
     pub generated: bool,
@@ -125,6 +128,7 @@ impl StudioApp {
                 .placeholder("Describe the website you want to build\u{2026}")
         });
         let api_key = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sk-ant-\u{2026}"));
+        let keys: Box<dyn wf_ai::KeyStore> = Box::new(wf_ai::default_key_store());
         let login_email = cx.new(|cx| InputState::new(window, cx).default_value("rana@studio.sa").placeholder("you@email.com"));
         let login_pw = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Password"));
         let acp_url = cx.new(|cx| InputState::new(window, cx).placeholder("wss://localhost:4000  \u{b7}  or:  npx my-agent --acp"));
@@ -190,11 +194,17 @@ impl StudioApp {
             .detach();
         }
 
+        // Restore the default provider's saved key (OS keychain → env fallback).
+        if let Some(k) = keys.get(wf_ai::ProviderKind::Anthropic) {
+            api_key.update(cx, |s, cx| s.set_value(k, window, cx));
+        }
+
         Self {
             screen: Screen::Login,
             ob_step: 0,
             provider: ProviderId::Anthropic,
             api_key,
+            keys,
             dir: Dir::Rtl,
             device: Device::Desktop,
             generated: false,
@@ -301,6 +311,19 @@ impl StudioApp {
         let k = self.key_text(cx);
         let k = k.trim();
         k.len() >= 10 && !k.chars().any(char::is_whitespace)
+    }
+    /// Persist the current key-field value to the key store, under the selected
+    /// provider. Called when generation uses the key, so a pasted key survives a
+    /// restart without an explicit save step.
+    fn save_current_key(&self, cx: &Context<Self>) {
+        let key = self.key_text(cx);
+        let key = key.trim();
+        if key.is_empty() {
+            return;
+        }
+        if let Err(e) = self.keys.set(self.provider_kind(), key) {
+            eprintln!("wf-studio: could not save API key to the keychain: {e}");
+        }
     }
     // ── chat / activity / history ───────────────────────────────────────────
     fn push_msg(&mut self, role: Role, text: impl Into<SharedString>) {
@@ -857,6 +880,8 @@ impl StudioApp {
             cx.notify();
             return;
         }
+        // Remember the key for next time (per provider), now that it is in use.
+        self.save_current_key(cx);
 
         let kind = self.provider_kind();
         let mut config = wf_core::GenConfig::for_model(kind.default_model());

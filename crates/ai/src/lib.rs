@@ -10,6 +10,7 @@
 //! (see [`stream`]) so this crate is runtime-agnostic for callers.
 
 mod anthropic;
+mod keystore;
 mod openai;
 mod prompt;
 mod scripted;
@@ -19,12 +20,13 @@ mod stream;
 use serde::{Deserialize, Serialize};
 
 pub use anthropic::AnthropicAdapter;
+pub use keystore::{default_key_store, ChainKeyStore, EnvKeyStore, InMemoryKeyStore, KeyStore, KeyringStore};
 pub use openai::OpenAiCompatAdapter;
 pub use prompt::LANGUAGE_CARD;
 pub use scripted::ScriptedProvider;
 
 /// The six launch providers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
     Anthropic,
     OpenAi,
@@ -94,6 +96,31 @@ impl ProviderKind {
             ProviderKind::DeepSeek => "DeepSeek",
             ProviderKind::Kimi => "Moonshot (Kimi)",
             ProviderKind::Glm => "Zhipu (GLM)",
+        }
+    }
+
+    /// Stable slug — the keyring account and config key for this provider.
+    pub fn slug(self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAi => "openai",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::DeepSeek => "deepseek",
+            ProviderKind::Kimi => "moonshot",
+            ProviderKind::Glm => "zhipu",
+        }
+    }
+
+    /// The conventional environment variable holding this provider's key — the
+    /// env fallback when nothing is in the OS keychain (dev/CI).
+    pub fn key_env(self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
+            ProviderKind::OpenAi => "OPENAI_API_KEY",
+            ProviderKind::Gemini => "GEMINI_API_KEY",
+            ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
+            ProviderKind::Kimi => "MOONSHOT_API_KEY",
+            ProviderKind::Glm => "ZHIPU_API_KEY",
         }
     }
 }
