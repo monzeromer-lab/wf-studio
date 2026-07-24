@@ -179,6 +179,98 @@ pub fn edit_node(
     }
 }
 
+/// A successful self-heal: the corrected source + the number of model calls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HealOutcome {
+    pub source: String,
+    pub attempts: usize,
+}
+
+/// Why a self-heal did not produce an acceptable fix.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HealError {
+    Provider(String),
+    NoWfBlock,
+    /// No compiling, design-preserving fix within the budget; `last_reason` is why
+    /// the final attempt was rejected.
+    GaveUp { last_reason: String, attempts: usize },
+}
+
+impl std::fmt::Display for HealError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HealError::Provider(e) => write!(f, "the AI provider failed: {e}"),
+            HealError::NoWfBlock => write!(f, "the AI reply contained no WebFluent"),
+            HealError::GaveUp { last_reason, attempts } => {
+                write!(f, "couldn't fix it without changing the design after {attempts} attempts ({last_reason})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HealError {}
+
+/// Repair a runtime error in a *compiling* page (FR-19–22 / §4.6). The model is
+/// asked to fix only the cause; each candidate must compile AND pass the
+/// **design-freeze**: it may not change anything visible (no `Text`/`Style`/
+/// `Structure` diff — only invisible logic like state/actions/handlers). A fix
+/// that alters the design is rejected and re-prompted — the AST paying rent, not
+/// a prompt-hope. Bounded by `max_attempts`.
+pub fn self_heal(
+    provider: &dyn Provider,
+    base_source: &str,
+    runtime_error: &str,
+    config: &GenConfig,
+) -> Result<HealOutcome, HealError> {
+    let system = format!(
+        "{LANGUAGE_CARD}\n\n# FIX MODE\nA compiled page threw a runtime error. Return the \
+         corrected, COMPLETE page in one ```wf block. Fix ONLY the cause of the error — do NOT \
+         change any visible text, layout, styling, modifiers, or components. Change only logic: \
+         state, derived, actions, event handlers, and expressions."
+    );
+    let mut messages = vec![
+        ChatMessage::system(system),
+        ChatMessage::user(format!("The page:\n```wf\n{base_source}\n```\n\nRuntime error:\n{runtime_error}")),
+    ];
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        let request = ChatRequest {
+            model: config.model.clone(),
+            messages: messages.clone(),
+            max_tokens: config.max_tokens,
+        };
+        let reply = collect_text(provider.stream_chat(request)).map_err(HealError::Provider)?;
+        let fix = extract_wf(&reply).ok_or(HealError::NoWfBlock)?;
+
+        match validate_fix(base_source, &fix) {
+            Ok(()) => return Ok(HealOutcome { source: fix, attempts }),
+            Err(reason) => {
+                if attempts >= config.max_attempts {
+                    return Err(HealError::GaveUp { last_reason: reason, attempts });
+                }
+                messages.push(ChatMessage::assistant(reply));
+                messages.push(ChatMessage::user(format!(
+                    "That didn't work: {reason}. Return a corrected complete page that fixes ONLY \
+                     the error and leaves everything visible exactly as it is.",
+                )));
+            }
+        }
+    }
+}
+
+/// A fix passes if it compiles and the design-freeze holds: it changed no element,
+/// modifier, or style block (position-independent, so a logic fix that shifts ids
+/// is fine). Text and logic may change; layout/styling may not.
+fn validate_fix(base: &str, fix: &str) -> Result<(), String> {
+    compile_source(fix).map_err(|e| format!("it didn't compile: {e}"))?;
+    if !crate::diff::design_preserved(base, fix).map_err(|e| format!("couldn't compare it: {e}"))? {
+        return Err("it changed the visible design (layout, styling, or components)".to_string());
+    }
+    Ok(())
+}
+
 /// Extract `.wf` source from a model reply: the first fenced code block (```wf
 /// or a bare fence), else the whole reply if it already looks like WebFluent.
 fn extract_wf(text: &str) -> Option<String> {
@@ -328,5 +420,47 @@ mod tests {
     fn edit_node_rejects_an_unknown_node() {
         let p = ScriptedProvider::with_text("```wf\nText(\"x\")\n```");
         assert!(edit_node(&p, BASE, "Nope:9", "x", &cfg()).is_err());
+    }
+
+    // ── self-heal + design-freeze (M4.2) ──────────────────────────────────────
+    // Compiles, but `{count}` is undefined → a runtime ReferenceError.
+    const BUGGY: &str = "Page Home (path: \"/\") { Text(\"{count}\") }";
+    // A logic-only fix: adds state (shifts the Text's structural id) but changes
+    // nothing visible.
+    const LOGIC_FIX: &str = "```wf\nPage Home (path: \"/\") { state count = 0\n  Text(\"{count}\") }\n```";
+    // Also adds a `bold` modifier → a design change the freeze must reject.
+    const STYLE_FIX: &str = "```wf\nPage Home (path: \"/\") { state count = 0\n  Text(\"{count}\", bold) }\n```";
+
+    #[test]
+    fn self_heal_accepts_a_logic_only_fix() {
+        let p = ScriptedProvider::with_text(LOGIC_FIX);
+        let out = self_heal(&p, BUGGY, "ReferenceError: count is not defined", &cfg()).unwrap();
+        assert_eq!(out.attempts, 1);
+        assert!(out.source.contains("state count"));
+        assert!(!out.source.contains("bold"));
+    }
+
+    #[test]
+    fn design_freeze_rejects_a_visible_change_then_accepts_a_clean_fix() {
+        let p = ScriptedProvider::new(ProviderKind::Anthropic);
+        p.push_text(STYLE_FIX).push_text(LOGIC_FIX); // style change rejected, then clean
+        let out = self_heal(&p, BUGGY, "ReferenceError", &cfg()).unwrap();
+        assert_eq!(out.attempts, 2, "the bold-adding fix was rejected by the design-freeze");
+        assert!(!out.source.contains("bold"));
+    }
+
+    #[test]
+    fn self_heal_gives_up_if_every_fix_changes_the_design() {
+        let p = ScriptedProvider::new(ProviderKind::Anthropic);
+        p.push_text(STYLE_FIX).push_text(STYLE_FIX).push_text(STYLE_FIX);
+        assert!(matches!(self_heal(&p, BUGGY, "err", &cfg()), Err(HealError::GaveUp { .. })));
+    }
+
+    #[test]
+    fn self_heal_retries_a_non_compiling_fix() {
+        let p = ScriptedProvider::new(ProviderKind::Anthropic);
+        p.push_text("```wf\nPage Home (path: \"/\") { Ghost() }\n```").push_text(LOGIC_FIX);
+        let out = self_heal(&p, BUGGY, "err", &cfg()).unwrap();
+        assert_eq!(out.attempts, 2);
     }
 }

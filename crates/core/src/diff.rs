@@ -99,6 +99,29 @@ pub fn diff(base: &str, proposal: &str) -> anyhow::Result<Vec<Chip>> {
     Ok(chips)
 }
 
+/// True if `fix` preserves the design of `base`: same set of elements with the
+/// same modifiers and style blocks (§4.6 design-freeze). It ignores element order
+/// and non-UI statements, so a logic-only fix (adding `state`/an action) — which
+/// shifts structural ids — still counts as design-preserving; only a changed
+/// element type, modifier, or style block trips it. Text/logic may change.
+pub fn design_preserved(base: &str, fix: &str) -> anyhow::Result<bool> {
+    Ok(style_fingerprint(base)? == style_fingerprint(fix)?)
+}
+
+/// A sorted, position-independent fingerprint of a page's appearance: one entry
+/// per element = `name | sorted-modifiers | style-block-source`.
+fn style_fingerprint(source: &str) -> anyhow::Result<Vec<String>> {
+    let prog = parse(source)?;
+    let mut fp = Vec::new();
+    visit_nodes(&prog, &mut |ui, _id, _component| {
+        let mut mods = ui.modifiers.clone();
+        mods.sort();
+        fp.push(format!("{}|{}|{}", elem_name(ui), mods.join(","), span_src(ui.style_span, source)));
+    });
+    fp.sort();
+    Ok(fp)
+}
+
 fn parse(src: &str) -> anyhow::Result<Program> {
     let tokens = Lexer::new(src, "<diff>").tokenize().map_err(|e| anyhow::anyhow!("{e}"))?;
     Parser::new(tokens, "<diff>").parse().map_err(|e| anyhow::anyhow!("{e}"))
