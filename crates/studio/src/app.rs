@@ -805,7 +805,7 @@ impl StudioApp {
                     Err(e) => {
                         // Non-blocking: flag it and keep the app usable (FR-22).
                         a.status = Status::Error;
-                        a.push_msg(Role::Assistant, format!("A runtime error needs your attention — I couldn't fix it safely without changing the design: {e}"));
+                        a.push_msg(Role::Assistant, format!("A runtime error needs your attention — I couldn't fix it safely without changing the design: {}", friendly(&e)));
                         a.show_toast(ToastTone::Idle, "A runtime error needs attention \u{2014} see the chat.", cx);
                     }
                 }
@@ -1076,7 +1076,7 @@ impl StudioApp {
                     }
                     Err(e) => {
                         a.status = Status::Error;
-                        a.push_msg(Role::Assistant, format!("I couldn't build a working page: {e}"));
+                        a.push_msg(Role::Assistant, format!("I couldn't build a working page: {}", friendly(&e)));
                         a.show_toast(ToastTone::Idle, "Generation failed \u{2014} see the chat for details.", cx);
                     }
                 }
@@ -1173,13 +1173,13 @@ impl StudioApp {
                             }
                             Err(e) => {
                                 a.status = Status::Error;
-                                a.push_msg(Role::Assistant, format!("I made the edit but couldn't diff it: {e}"));
+                                a.push_msg(Role::Assistant, format!("I made the edit but couldn't diff it: {}", friendly(&e)));
                             }
                         }
                     }
                     Err(e) => {
                         a.status = Status::Error;
-                        a.push_msg(Role::Assistant, format!("I couldn't make that edit: {e}"));
+                        a.push_msg(Role::Assistant, format!("I couldn't make that edit: {}", friendly(&e)));
                     }
                 }
                 cx.notify();
@@ -1248,7 +1248,7 @@ impl StudioApp {
                 self.show_toast(ToastTone::Success, format!("Applied {count} change(s)."), cx);
             }
             Err(e) => {
-                self.push_msg(Role::Assistant, format!("Some of those changes conflicted and couldn't be applied together: {e}. Try keeping fewer, or apply all."));
+                self.push_msg(Role::Assistant, format!("Some of those changes conflicted and couldn't be applied together: {}. Try keeping fewer, or apply all.", friendly(&e)));
                 self.show_toast(ToastTone::Idle, "Couldn't apply that combination \u{2014} see the chat.", cx);
             }
         }
@@ -1735,5 +1735,44 @@ fn map_chip_kind(k: wf_core::ChipKind) -> ChipKind {
         wf_core::ChipKind::Style => ChipKind::Style,
         wf_core::ChipKind::Structure => ChipKind::Structure,
         wf_core::ChipKind::Behavior => ChipKind::Behavior,
+    }
+}
+
+/// Clean an error for display: drop the `Error:` prefix and every
+/// ` at <file>:line:col` coordinate the compiler diagnostics append. The user
+/// never sees file paths, line numbers, or code (FR-6, "no code visible").
+fn friendly(msg: impl std::fmt::Display) -> String {
+    let mut s = msg.to_string().replace("Error: ", "");
+    while let Some(start) = s.find(" at <") {
+        // The coordinate runs to the next ')' (kept) or the end of the string.
+        let end = s[start..].find(')').map(|i| start + i).unwrap_or(s.len());
+        s.replace_range(start..end, "");
+    }
+    s.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friendly;
+
+    #[test]
+    fn friendly_strips_file_coordinates() {
+        assert_eq!(
+            friendly("Error: unknown component `X`: no `Component X` is declared at <studio>:1:25"),
+            "unknown component `X`: no `Component X` is declared"
+        );
+    }
+
+    #[test]
+    fn friendly_strips_an_embedded_coordinate_and_keeps_the_paren() {
+        assert_eq!(
+            friendly("could not produce a compiling page after 3 attempts (last error: bad thing at <studio>:2:3)"),
+            "could not produce a compiling page after 3 attempts (last error: bad thing)"
+        );
+    }
+
+    #[test]
+    fn friendly_leaves_plain_messages_alone() {
+        assert_eq!(friendly("the AI provider failed: 429 rate limited"), "the AI provider failed: 429 rate limited");
     }
 }
