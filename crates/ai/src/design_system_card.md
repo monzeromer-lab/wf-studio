@@ -6,17 +6,23 @@ A design system is not a component gallery. Per designsystems.com it is "an ever
 Return ONLY WebFluent source inside a SINGLE ```wf code block. No prose, no explanation, no markdown before or after — the studio discards everything outside the block. Emit UI source only: NEVER emit `webfluent.app.json`, `theme.tokens`, or a `Theme { }` block (none exist in this grammar). Token VALUES (hex, px) are documentation *content* you render in galleries; token NAMES (`primary`, `surface`, …) are the fixed semantic vocabulary your chrome and specimens actually use. You DOCUMENT tokens; you do not define them.
 
 A design system is a MULTI-PAGE site expressed as one file = one sequence of top-level declarations. **Emit, in this order:**
-1. The reusable **docs Components** (`TokenSwatch`, `TypeSpecimen`, `SpecimenStage`, `PropsTable`, `DoCard`, `DontCard`, `StateCell`, `A11yNote`, `StatusBadge`, plus any user component you document).
+1. The reusable **docs Components** — ONLY components that pass props positionally with no style interpolation: `SpecimenStage`, `DoCard`, `DontCard`, `StateCell`, `A11yNote`, `StatusBadge`, plus any user component you document. (Do NOT declare a `TokenSwatch`, `TypeSpecimen`, or `PropsTable` component: a swatch/specimen coloured or sized from a prop renders EMPTY, and a props table built with a `for` renders nothing. Write colour swatches, type specimens, and props/token tables as LITERAL inline elements instead — see §STATIC RENDERING.)
 2. **One `App`** = `Navbar` (brand + top links) + `Sidebar` (the docs IA) + `Router { Route per page }` + `Footer`.
 3. **One `Page` per section** (paths listed in §SITE STRUCTURE).
 
 Every `Route.page:` MUST name a `Page` you declare; every name is unique; every `Page` needs `path:`. A `Route` to a missing `Page`, an undeclared component, or a duplicate name → the whole output is REJECTED.
 
-**CRITICAL — STATIC RENDERING (no interpolation into styles/props):** The system renders as pre-painted STATIC HTML. `{...}` string interpolation and `for … { }` loops do NOT substitute values into the visible output, and a component prop can NEVER reach a `style { }` value. So:
-- **Colour / token swatches: write the LITERAL value inline.** Emit each swatch directly — `Container { style { background: "#7C5CFF"; height: "56px"; radius: md } }` — with the real hex. NEVER colour a swatch from a prop (`style { background: "{hex}" }` renders EMPTY), and NEVER drive a ramp with `for c in [...]`; spell out every swatch literally.
-- **Pass prop VALUES positionally, never inside a string.** `Heading(name)` / `Text(usage)` renders the prop; `Text("{usage}")` prints literal braces. A reusable swatch component may LABEL itself via `Text(name)` but cannot COLOUR itself — which is exactly why colour swatches are inlined.
+**CRITICAL — STATIC RENDERING (no interpolation into styles, no loops in the visible output):** The system renders as pre-painted STATIC HTML. THREE hard consequences you MUST design around:
+- **`for … in … { }` loops render NOTHING.** A loop emits an empty placeholder — its body never appears. NEVER build a colour ramp, an icon grid, a token table, or a props table with a `for`. Write every row/swatch/cell out LITERALLY, one element at a time.
+- **`{...}` string interpolation is NOT substituted into the visible output, and a component prop can NEVER reach a `style { }` value.** `Text("{x}")` prints the literal braces `{x}`; `style { background: "{hex}" }` renders EMPTY.
+- **Only POSITIONAL prop passing renders.** `Heading(title)`, `Text(name)`, `Badge(label)`, `Alert(text, info)` — passing a prop as a bare positional argument WORKS and prints its value. That is the ONLY way a prop reaches the page. A component can therefore LABEL itself from a prop (`Text(name)`) but can never COLOUR or SIZE itself from a prop.
+
+So:
+- **Colour / token swatches: write the LITERAL value inline.** Emit each swatch directly — `Container { style { background: "#7C5CFF"  height: "56px"  radius: md } }` — with the real hex hard-coded in the style. Do NOT colour a swatch from a prop, and do NOT drive a ramp with a `for`; spell out every swatch of the ramp literally, then label each with literal `Text("indigo-600")` / `Text("#7C5CFF")`.
+- **Type specimens, spacing bars, and any style-parameterised specimen are LITERAL too** — each specimen writes its own inline `style { font-size: "24px"  line-height: "32px"  font-weight: "600" }` with real values; none are parameterised through a component prop.
 - **Every `style { }` value is a LITERAL** (`"#3b82f6"`, `"24px"`) **or a semantic token keyword** (`primary`, `surface`) — never `"{anything}"`.
-Where earlier examples below show `background: "{hex}"` or a `for` over a ramp, follow THIS rule instead: write literal, fully-expanded content. Token galleries, type specimens, and foundations are hand-written literal documentation, not parameterized templates.
+- **Style-block properties are separated by WHITESPACE / NEWLINES only — NEVER `;` and NEVER `,`.** `style { background: "#fff"; height: "56px" }` is a PARSE ERROR ("Unexpected character ';'"). Write `style { background: "#fff"  height: "56px" }`, or one property per line inside the braces.
+Reusable components are safe ONLY when they pass props positionally with no style interpolation (e.g. `SpecimenStage(label)`, `DoCard(rule)`, `A11yNote(text)`). Token galleries, type specimens, colour ramps, and every foundation are hand-written LITERAL documentation, not parameterised templates or loops.
 
 # GRAMMAR
 A file is a sequence of top-level declarations. Comments: `// line`, `/* block */`.
@@ -83,7 +89,7 @@ Prefer **modifiers > tokens > raw CSS**. Reach for raw CSS last — EXCEPT in fo
 **Modifier vocabulary — the ONLY valid bare modifiers** (any other bare word becomes an undefined variable, silently): size `small large` · color `primary secondary success danger warning info` · shape `rounded pill square` · elevation `flat elevated outlined` · width `full fit` · text `bold italic underline uppercase lowercase` · align `left center right` · type `heading subtitle muted` · heading `h1..h6` · input type `text email password number search tel url date time datetime color` · button `submit reset` · misc `dismissible block bordered controls autoplay` · anim `fadeIn fadeOut slideUp slideDown slideLeft slideRight scaleIn scaleOut bounce shake pulse spin` · speed `fast slow`.
 There is **no** `hover`, `focus`, `active`, `disabled`, or `loading` modifier. Component STATES are depicted, not triggered (see §STATES).
 
-**Style block** (scoped): `style { prop: value }`. Value = **bare token keyword** (unquoted) OR **quoted raw CSS** string. Never swap the two.
+**Style block** (scoped): `style { prop: value }`. Value = **bare token keyword** (unquoted) OR **quoted raw CSS** string. Never swap the two. **Properties are separated by WHITESPACE / NEWLINES only — NEVER `;` and NEVER `,`** (`style { background: "#fff"; height: "56px" }` → parse error; write `style { background: "#fff"  height: "56px" }`).
 Token-aware keys (accept a bare token OR a raw string): `background color padding font-size` + aliases `radius`→border-radius, `shadow`→box-shadow, plus `border width`. Any other CSS property is allowed with a **quoted raw CSS value** (`height: "56px"`, `line-height: "1.5"`, `font-weight: "600"`, `opacity: "0.5"`). Tokens (reference by suffix): color `primary secondary success danger warning info background surface text text-muted border` · spacing `xs sm md lg xl 2xl 3xl` · radius `none sm md lg xl full` · shadow `none sm md lg xl` · font-size `xs sm base lg xl 2xl 3xl`.
 
 **Responsive**: NO raw `@media`/selectors. Use `Column(span:12, md:6, lg:4)` and `show screen.md { }`. Breakpoints sm 640 · md 768 · lg 1024 · xl 1280.
@@ -94,7 +100,7 @@ Token-aware keys (accept a bare token OR a raw string): `background color paddin
 3. Reference **only declared names** — a builtin or a `Component` you define in the same output. Undeclared component, `Route` pointing at a missing `Page`, or duplicate declaration name → REJECTED.
 4. Every Page needs `path:`; every Route needs `path:` and `page:`.
 
-**Avoid**: interpolating with `${x}` (prints a literal `$`; use `{x}`) · quoting map keys · reserved words as map keys (use `def`, not `default`) · reading a Store member without `use` and `StoreName.` · `Button(label:"X")` (label is positional: `Button("X")`) · statement-body lambdas · raw `<td>`/`Ul`/`Li`/`th` (use `Tcell`/`List`/`Thead`) · `bind:` on a non-input or without a matching `state` · nesting child ELEMENTS inside a `Button`/`Link` block (that block is `on:click` — wrap decoration in a `Container` instead).
+**Avoid**: `;` or `,` between `style { }` properties (whitespace/newline only) · **reserved keywords as prop/identifier names** — the lexer reserves `state derived effect action use fetch from navigate log return if else for in show loading error success true false null style token animate transition children`; a prop named `token`, `state`, `error`, `success`, `from`, `children`, `for`, `in`, or `use` is a PARSE ERROR, so name props around them (`tokenName`, not `token`; `role`/`kind`/`variant`, not `state`) — `type` and `def` are fine · interpolating with `${x}` (prints a literal `$`; use `{x}`) · quoting map keys · reserved words as map keys (use `def`, not `default`) · reading a Store member without `use` and `StoreName.` · `Button(label:"X")` (label is positional: `Button("X")`) · statement-body lambdas · raw `<td>`/`Ul`/`Li`/`th` (use `Tcell`/`List`/`Thead`) · `bind:` on a non-input or without a matching `state` · nesting child ELEMENTS inside a `Button`/`Link` block (that block is `on:click` — wrap decoration in a `Container` instead).
 
 ---
 
@@ -155,53 +161,14 @@ The docs IA lives in the `Sidebar` (grouped: Overview, Principles, Foundations, 
 ---
 
 # REUSABLE DOC COMPONENTS — declare these, then build the whole site from them
-So the site is itself a proof of the system. Definitions below are canonical and compile as-is.
+So the site is itself a proof of the system. Definitions below are canonical and compile as-is. **Every one passes its props POSITIONALLY and puts NO prop inside a `style { }` block or an interpolated string** — that is the only shape that renders. Do NOT add a swatch/specimen/table component that colours or sizes itself from a prop, or loops over a prop; those render empty. Write colour ramps, type specimens, and props/token tables as LITERAL inline elements (patterns shown right after this block).
 
 ```wf
-// Colour/token chip. The raw value is the subject (RAW-VALUE EXCEPTION); interpolate it into the style string.
-Component TokenSwatch (hex: String, name: String, usage: String) {
-    Card(outlined) {
-        Card.Body {
-            Container { style { background: "{hex}"; height: "56px"; radius: md } }
-            Spacer(sm)
-            Text(name, bold, small)
-            Text(hex, muted, small)
-            Text(usage, muted, small)
-        }
-    }
-}
-
-// Live type role: sample line styled by raw scale values + a spec row beneath.
-Component TypeSpecimen (sample: String, role: String, size: String, weight: String, lineHeight: String, token: String) {
-    Card(outlined) {
-        Card.Body {
-            Container {
-                style { font-size: "{size}"; font-weight: "{weight}"; line-height: "{lineHeight}" }
-                Text(sample)
-            }
-            Spacer(sm)
-            Text("{role} · {size} / {lineHeight} · {weight} · maps to {token}", muted, small)
-        }
-    }
-}
-
 // Framed stage for a real, live component instance.
 Component SpecimenStage (label: String) {
     Card(outlined) {
         Card.Header { Text(label, muted, small, uppercase) }
         Card.Body { children }
-    }
-}
-
-// Props/API table from a List of Maps {name,type,def,desc}. `def` avoids the reserved word `default`.
-Component PropsTable (rows: List) {
-    Table {
-        Thead { Trow { Tcell("Prop") Tcell("Type") Tcell("Default") Tcell("Description") } }
-        Tbody {
-            for r in rows {
-                Trow { Tcell(r.name) Tcell(r.type) Tcell(r.def) Tcell(r.desc) }
-            }
-        }
     }
 }
 
@@ -233,9 +200,45 @@ Component A11yNote (text: String) { Alert(text, info) }
 Component StatusBadge (label: String) { Badge(label, info, pill) }
 ```
 
+## LITERAL PATTERNS (not components — copy the shape, hard-code the values)
+Colour swatches, type specimens, and props/token tables CANNOT be reusable components (a prop can't reach a `style { }` and a `for` renders nothing). Write them out literally, like this:
+
+```wf
+// One colour swatch — hex hard-coded in the style, labelled with literal Text. Repeat per step; no prop, no loop.
+Card(outlined) {
+    Card.Body {
+        Container { style { background: "#4F46E5"  height: "56px"  radius: md } }
+        Spacer(sm)
+        Text("indigo-600", bold, small)
+        Text("#4F46E5", muted, small)
+        Text("Primary actions, focus, links.", muted, small)
+    }
+}
+
+// One type-scale specimen — size/weight/line-height hard-coded inline; spec row is a literal Text. Repeat per role.
+Card(outlined) {
+    Card.Body {
+        Container { style { font-size: "36px"  line-height: "40px"  font-weight: "700" }
+            Text("The quick brown fox jumps")
+        }
+        Spacer(sm)
+        Text("Display · 36px / 40px · 700 · maps to font-size 3xl", muted, small)
+    }
+}
+
+// A props/API or token table — literal Trows, one per row. NEVER a for-loop (it renders nothing).
+Table {
+    Thead { Trow { Tcell("Prop") Tcell("Type") Tcell("Default") Tcell("Description") } }
+    Tbody {
+        Trow { Tcell("label") Tcell("String") Tcell("—") Tcell("Positional. The button text.") }
+        Trow { Tcell("color") Tcell("modifier") Tcell("secondary") Tcell("primary · secondary · danger.") }
+    }
+}
+```
+
 Notes:
 - **StateGrid** = a `Grid` of `StateCell`s. States (default/hover/focus/active/pressed/selected/indeterminate/disabled/read-only/loading/error) are NOT triggerable, so DEPICT them: disabled → wrap in `Container { style { opacity: "0.5" } … }`; focus → `Container { style { shadow: "0 0 0 3px #93c5fd" } … }`; loading → show a `Spinner` + label beside the specimen; error/success → recolour the specimen or add a `Badge`. Always LABEL every cell. Minimum set per interactive component: default, hover, focus, active, disabled, plus loading + error for functional ones.
-- **Token tables**: prefer an inline `for t in [ {name, value, usage} ] { Trow { Tcell(t.name) … } }` inside `Tbody` over a component-per-row, so the table parser only ever sees literal `Trow`s.
+- **Token tables**: write literal `Trow`s inside `Tbody`, ONE per token (`Trow { Tcell("primary") Tcell("#3b82f6") Tcell("Primary actions.") }`). NEVER use a `for` loop or a component-per-row — a `for` renders nothing, so the `Tbody` would come out empty.
 - **Anatomy**: WebFluent has no diagram primitive and you cannot create image assets — do NOT use `Image(src:)` for anatomy. Build anatomy from layout primitives: a live specimen in a `SpecimenStage`, with a `Table` or `List` naming each part (Container/Label/Icon/…) and its role.
 
 ---
@@ -246,17 +249,17 @@ Notes:
 
 **Principles (`/principles`)** — 3–5 sections. Each: `Heading(h2)` imperative statement → one-line rationale `Text(muted)` → a real in-system example in a `SpecimenStage` → a `Grid(columns: 2)` of `DoCard`/`DontCard`. Opinionated and actionable; no wish-list.
 
-**FoundationsColor (`/foundations/color`)** — intent statement → primitive ramps as `Grid`s of `TokenSwatch` (drive each ramp with `for c in [ {hex, step} ] { TokenSwatch(...) }`) → a semantic-role `Table` (Token / Value / Usage) → validated contrast pairs (swatches captioned with the ratio, e.g. "text on surface — 12.6:1 AA") → `A11yNote`.
+**FoundationsColor (`/foundations/color`)** — intent statement → primitive ramps as `Grid`s of LITERAL inline swatches (one `Card { Card.Body { Container { style { background: "#eff6ff"  height: "56px"  radius: md } } Spacer(sm) Text("blue-50", bold, small) Text("#eff6ff", muted, small) } }` per step — write every swatch out, NO `for`, NO `TokenSwatch` component) → a semantic-role `Table` with literal `Trow`s (Token / Value / Usage) → validated contrast pairs (swatches captioned with the ratio, e.g. "text on surface — 12.6:1 AA") → `A11yNote`.
 
-**FoundationsType (`/foundations/typography`)** — establish type early (it can be 85–90% of a screen). Render a modular scale (16px base, ≈1.2–1.25 ratio) as composite ROLES via `TypeSpecimen`: display-2xl/xl/lg, h1–h6, body-lg/md/sm, label/button, caption, overline, code/mono. Each shows a live sample + spec row (size / line-height / weight / letter-spacing / token). Note: negative letter-spacing on large display, positive on all-caps overline, minimal weights for performance, largest responsive variance at big displays. For h1–h6 you may also use real `Heading(h1..h6)` so specimens track the live theme.
+**FoundationsType (`/foundations/typography`)** — establish type early (it can be 85–90% of a screen). Render a modular scale (16px base, ≈1.2–1.25 ratio) as composite ROLES, each a LITERAL inline specimen: `Card(outlined) { Card.Body { Container { style { font-size: "36px"  line-height: "40px"  font-weight: "700" } Text("The quick brown fox") } Spacer(sm) Text("Display · 36px / 40px · 700", muted, small) } }`. Cover display-2xl/xl/lg, h1–h6, body-lg/md/sm, label/button, caption, overline, code/mono — write each out with its own hard-coded values (NO `TypeSpecimen` component, NO interpolation). Note: negative letter-spacing on large display, positive on all-caps overline, minimal weights for performance, largest responsive variance at big displays. For h1–h6 you may also use real `Heading(h1..h6)` so specimens track the live theme.
 
-**FoundationsSpacing (`/foundations/spacing`)** — visualize the 8pt scale: for each step render a bar `Container { style { background: primary; height: "16px"; width: "…" } }` sized to the step, plus a scale `Table` (Token / px / Usage). Use `Spacer(sm/md/lg/xl)` and `Divider` to demonstrate rhythm.
+**FoundationsSpacing (`/foundations/spacing`)** — visualize the 8pt scale: write ONE literal bar per step (do NOT loop) — `Container { style { background: primary  height: "16px"  width: "24px" } }` for `md`, a wider bar for `lg`, etc. — plus a scale `Table` of literal `Trow`s (Token / px / Usage). Use `Spacer(sm/md/lg/xl)` and `Divider` to demonstrate rhythm.
 
 **FoundationsLayout (`/foundations/layout`)** — a live 12-column demo with `Row { Column(span: 6, md: 4, lg: 3) { … } }`; a breakpoints `Table` (sm 640 / md 768 / lg 1024 / xl 1280); notes on adaptive vs responsive vs strict strategies; `Grid(columns:, gap:)` and `Container(fluid)` demos.
 
-**FoundationsElevation (`/foundations/elevation`)** — one `Card` per level, ordered, each `style { shadow: none|sm|md|lg|xl }` with a caption naming the level's role (flat surface → card → dropdown → modal → popover). A `Table` mapping level → token → usage.
+**FoundationsElevation (`/foundations/elevation`)** — one `Card` per level, ordered, each with a single literal shadow token (`style { shadow: none }`, then `style { shadow: sm }`, `md`, `lg`, `xl`) and a caption naming the level's role (flat surface → card → dropdown → modal → popover). A `Table` of literal `Trow`s mapping level → token → usage.
 
-**FoundationsIcons (`/foundations/icons`)** — a `Grid` over the ALLOWED icon names ONLY (`for n in ["home","search","user",…] { Card { Icon(n) Text(n, muted, small) } }`). Sizing/keyline/stroke notes: grid-of-8 → 16/24/32; uniform stroke, radius, end-caps; single-colour product icons. Do NOT invent icon names.
+**FoundationsIcons (`/foundations/icons`)** — a `Grid` of LITERAL cells over the ALLOWED icon names ONLY — write each out: `Card { Card.Body { Icon("home") Spacer(sm) Text("home", muted, small) } }`, then `Icon("search")`, `Icon("user")`, … NO `for` loop (it renders nothing). Sizing/keyline/stroke notes: grid-of-8 → 16/24/32; uniform stroke, radius, end-caps; single-colour product icons. Do NOT invent icon names.
 
 **FoundationsMotion (optional, `/foundations/motion`)** — document the animation modifier vocabulary (`fadeIn slideUp scaleIn bounce shake pulse spin …`) and `speed` (`fast slow`) as the motion system, each demonstrated live on a `Button`/`Card`. There are no duration/easing tokens — say so.
 
@@ -272,7 +275,7 @@ Notes:
 5. **Variants** — by INTENT (primary/secondary/tertiary/ghost/danger), not appearance; a `Grid` of `SpecimenStage`s.
 6. **States** — a StateGrid (`Grid` of `StateCell`), depicted per the notes above.
 7. **Sizes & responsive** — small/large specimens; `Column(md:,lg:)` behaviour.
-8. **Props / API** — `PropsTable(rows: [...])`.
+8. **Props / API** — a literal `Table`: `Thead` with a header `Trow`, then one literal `Trow { Tcell("label") Tcell("String") Tcell("—") Tcell("…") }` per prop. No `for`, no `PropsTable` component.
 9. **Tokens consumed** — a `Table` listing which semantic tokens (colour, spacing, radius, type, elevation) it uses.
 10. **Usage** — when to use / when NOT to use (`List` or two `Card`s).
 11. **Do / Don't** — `Grid(columns: 2)` of `DoCard`/`DontCard`, each a real example + one-line rule.
@@ -304,34 +307,11 @@ Keep component names, prop names, variant values, and part names ALIGNED across 
 
 # WORKED EXAMPLE (a small but complete site — compiles under this grammar)
 ```wf
-// ---- docs components ----
-Component TokenSwatch (hex: String, name: String, usage: String) {
-    Card(outlined) {
-        Card.Body {
-            Container { style { background: "{hex}"; height: "56px"; radius: md } }
-            Spacer(sm)
-            Text(name, bold, small)
-            Text(hex, muted, small)
-            Text(usage, muted, small)
-        }
-    }
-}
-
+// ---- docs components (positional props only; swatches/specimens/tables are written literally, not as components) ----
 Component SpecimenStage (label: String) {
     Card(outlined) {
         Card.Header { Text(label, muted, small, uppercase) }
         Card.Body { children }
-    }
-}
-
-Component PropsTable (rows: List) {
-    Table {
-        Thead { Trow { Tcell("Prop") Tcell("Type") Tcell("Default") Tcell("Description") } }
-        Tbody {
-            for r in rows {
-                Trow { Tcell(r.name) Tcell(r.type) Tcell(r.def) Tcell(r.desc) }
-            }
-        }
     }
 }
 
@@ -414,8 +394,45 @@ Page FoundationsColor (path: "/foundations/color", title: "Color") {
         Heading("Brand ramp (primitive)", h2)
         Spacer(sm)
         Grid(columns: 5, gap: sm) {
-            for c in [ {hex: "#eff6ff", step: "50"}, {hex: "#dbeafe", step: "100"}, {hex: "#93c5fd", step: "300"}, {hex: "#3b82f6", step: "500"}, {hex: "#1d4ed8", step: "700"} ] {
-                TokenSwatch(hex: c.hex, name: "blue-{c.step}", usage: "primitive")
+            Card(outlined) {
+                Card.Body {
+                    Container { style { background: "#eff6ff"  height: "56px"  radius: md } }
+                    Spacer(sm)
+                    Text("blue-50", bold, small)
+                    Text("#eff6ff", muted, small)
+                }
+            }
+            Card(outlined) {
+                Card.Body {
+                    Container { style { background: "#dbeafe"  height: "56px"  radius: md } }
+                    Spacer(sm)
+                    Text("blue-100", bold, small)
+                    Text("#dbeafe", muted, small)
+                }
+            }
+            Card(outlined) {
+                Card.Body {
+                    Container { style { background: "#93c5fd"  height: "56px"  radius: md } }
+                    Spacer(sm)
+                    Text("blue-300", bold, small)
+                    Text("#93c5fd", muted, small)
+                }
+            }
+            Card(outlined) {
+                Card.Body {
+                    Container { style { background: "#3b82f6"  height: "56px"  radius: md } }
+                    Spacer(sm)
+                    Text("blue-500", bold, small)
+                    Text("#3b82f6", muted, small)
+                }
+            }
+            Card(outlined) {
+                Card.Body {
+                    Container { style { background: "#1d4ed8"  height: "56px"  radius: md } }
+                    Spacer(sm)
+                    Text("blue-700", bold, small)
+                    Text("#1d4ed8", muted, small)
+                }
             }
         }
         Spacer(lg)
@@ -425,9 +442,9 @@ Page FoundationsColor (path: "/foundations/color", title: "Color") {
         Table {
             Thead { Trow { Tcell("Token") Tcell("Value") Tcell("Usage") } }
             Tbody {
-                for t in [ {name: "color-primary", value: "#3b82f6", usage: "Primary actions, focus, links."}, {name: "color-danger", value: "#dc2626", usage: "Errors, destructive actions."}, {name: "color-surface", value: "#ffffff", usage: "Cards and raised surfaces."} ] {
-                    Trow { Tcell(t.name) Tcell(t.value) Tcell(t.usage) }
-                }
+                Trow { Tcell("primary") Tcell("#3b82f6") Tcell("Primary actions, focus, links.") }
+                Trow { Tcell("danger") Tcell("#dc2626") Tcell("Errors, destructive actions.") }
+                Trow { Tcell("surface") Tcell("#ffffff") Tcell("Cards and raised surfaces.") }
             }
         }
         Spacer(lg)
@@ -509,11 +526,14 @@ Page ComponentsButton (path: "/components/button", title: "Button") {
 
         Heading("Props", h2)
         Spacer(sm)
-        PropsTable(rows: [
-            {name: "label", type: "String", def: "—", desc: "Positional. The button text."},
-            {name: "color", type: "modifier", def: "secondary", desc: "primary · secondary · success · danger · warning · info."},
-            {name: "size", type: "modifier", def: "—", desc: "small · large."}
-        ])
+        Table {
+            Thead { Trow { Tcell("Prop") Tcell("Type") Tcell("Default") Tcell("Description") } }
+            Tbody {
+                Trow { Tcell("label") Tcell("String") Tcell("—") Tcell("Positional. The button text.") }
+                Trow { Tcell("color") Tcell("modifier") Tcell("secondary") Tcell("primary · secondary · success · danger · warning · info.") }
+                Trow { Tcell("size") Tcell("modifier") Tcell("—") Tcell("small · large.") }
+            }
+        }
         Spacer(lg)
 
         Heading("Do / Don't", h2)
