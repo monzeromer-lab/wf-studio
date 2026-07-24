@@ -143,6 +143,11 @@ pub struct StudioApp {
     proposal_node: Option<String>,
     /// The source we last attempted to self-heal (attempt each version once).
     heal_tried: Option<String>,
+    /// The most recent unresolved preview error (a runtime error the auto-heal
+    /// couldn't fix, or an edit that didn't compile). Surfaced as a banner above
+    /// the composer and a "Fix with AI" action in the Activity log; cleared on the
+    /// next successful compile/reload.
+    pub last_error: Option<SharedString>,
     pub pruning: bool,
     pub caching: bool,
     pub heal_attempts: u8,
@@ -160,6 +165,13 @@ pub struct StudioApp {
     /// On-disk persistence for projects (branded `.wfp` bundles).
     store: crate::store::ProjectStore,
     pub new_type: ProjectKind,
+    /// Name field for the New Project modal (empty → a kind-based default).
+    pub new_name: Entity<InputState>,
+    /// Name field for the Rename Project modal.
+    pub rename_input: Entity<InputState>,
+    /// The project id a pending delete/rename modal targets.
+    pending_delete: Option<SharedString>,
+    pending_rename: Option<SharedString>,
     pub modal: Option<Modal>,
     pub conn_mode: ConnMode,
     pub conn_test: ConnTest,
@@ -251,6 +263,8 @@ impl StudioApp {
         let acp_url = cx.new(|cx| InputState::new(window, cx).placeholder("wss://localhost:4000  \u{b7}  or:  npx my-agent --acp"));
         let mcp_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let mcp_cmd = cx.new(|cx| InputState::new(window, cx).placeholder("Command or URL"));
+        let new_name = cx.new(|cx| InputState::new(window, cx).placeholder("My project"));
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
 
         cx.subscribe_in(&prompt, window, |this, _, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { secondary: false } = event {
@@ -365,6 +379,7 @@ impl StudioApp {
             proposal_file: None,
             proposal_node: None,
             heal_tried: None,
+            last_error: None,
             pruning: true,
             caching: true,
             heal_attempts: 3,
@@ -377,6 +392,10 @@ impl StudioApp {
             project_states: loaded_states,
             store,
             new_type: ProjectKind::Website,
+            new_name,
+            rename_input,
+            pending_delete: None,
+            pending_rename: None,
             modal: None,
             conn_mode: ConnMode::Key,
             conn_test: ConnTest::Untested,
@@ -583,10 +602,14 @@ impl StudioApp {
         if let Some(err) = self.project.error() {
             let err = err.to_string();
             error!(%err, "recompile failed, preview left unchanged");
+            self.status = Status::Error;
+            self.last_error = Some(err.clone().into());
             self.record_compile(false, "Edit didn't compile", Some(err.into()));
             self.show_toast(ToastTone::Idle, "That change didn't compile \u{2014} preview left as-is.", cx);
             return;
         }
+        // A clean recompile clears any standing error and its banner.
+        self.last_error = None;
         debug!(nodes = self.project.compiled().node_map.len(), "recompile ok");
         if let Ok(mut out) = self.output.write() {
             *out = self.project.compiled().clone();
@@ -921,7 +944,9 @@ impl StudioApp {
         self.proposal_file = None;
         self.proposal_node = None;
     }
-    pub fn new_project(&mut self, cx: &mut Context<Self>) {
+    pub fn new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Fresh name field each time the dialog opens.
+        self.new_name.update(cx, |s, cx| s.set_value("", window, cx));
         self.open_modal(Modal::NewProject, cx);
     }
     pub fn set_new_type(&mut self, kind: ProjectKind, cx: &mut Context<Self>) {
@@ -936,10 +961,18 @@ impl StudioApp {
         let kind = self.new_type;
         let now = crate::store::now_secs();
         let id: SharedString = format!("p-{now}").into();
-        let name = match kind {
-            ProjectKind::System => "New design system",
-            ProjectKind::Website => "New website",
+        // The user's name, trimmed; falls back to a kind-based default when blank.
+        let typed = self.new_name.read(cx).value().trim().to_string();
+        let name: String = if typed.is_empty() {
+            match kind {
+                ProjectKind::System => "New design system",
+                ProjectKind::Website => "New website",
+            }
+            .to_string()
+        } else {
+            typed
         };
+        let name = name.as_str();
         let mut sources = BTreeMap::new();
         sources.insert("src/pages/Home.wf".to_string(), starter_source(name));
         let bundle = crate::store::ProjectBundle {
@@ -965,16 +998,80 @@ impl StudioApp {
         self.open_project(id, cx);
     }
 
+    /// Ask to delete a project (opens the confirm dialog targeting `id`).
+    pub fn request_delete(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.pending_delete = Some(id);
+        self.open_modal(Modal::ConfirmDelete, cx);
+    }
+    /// The name of the project a delete/rename dialog targets (for the dialog copy).
+    pub fn pending_project_name(&self, id: &Option<SharedString>) -> SharedString {
+        id.as_ref()
+            .and_then(|id| self.projects.iter().find(|p| &p.id == id))
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "this project".into())
+    }
+    pub fn pending_delete_name(&self) -> SharedString {
+        self.pending_project_name(&self.pending_delete)
+    }
+    /// Confirm the pending delete: remove the `.wfp` bundle and the dashboard card.
+    pub fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.pending_delete.take() else {
+            self.close_modal(cx);
+            return;
+        };
+        self.delete_project(id, cx);
+        self.modal = None;
+        cx.notify();
+    }
+
     /// Delete a project from disk and the dashboard.
-    #[allow(dead_code)] // wired to a card affordance next
     pub fn delete_project(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        let _ = self.store.delete(id.as_ref());
+        if let Err(e) = self.store.delete(id.as_ref()) {
+            error!(error = %e, %id, "failed to delete project bundle");
+        }
         self.projects.retain(|p| p.id != id);
         self.project_states.remove(&id);
         if self.current_project.as_ref() == Some(&id) {
             self.current_project = None;
             self.screen = Screen::Home;
         }
+        info!(%id, remaining = self.projects.len(), "deleted project");
+        cx.notify();
+    }
+
+    /// Ask to rename a project (opens the rename dialog, prefilled with its name).
+    pub fn request_rename(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.projects.iter().find(|p| p.id == id).map(|p| p.name.to_string()).unwrap_or_default();
+        self.rename_input.update(cx, |s, cx| s.set_value(&current, window, cx));
+        self.pending_rename = Some(id);
+        self.open_modal(Modal::RenameProject, cx);
+    }
+    /// Confirm the pending rename: update the card, the on-disk bundle, and the open
+    /// project label. A blank name is ignored (keeps the old one).
+    pub fn confirm_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.pending_rename.take() else {
+            self.close_modal(cx);
+            return;
+        };
+        let name = self.rename_input.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            self.modal = None;
+            cx.notify();
+            return;
+        }
+        // Update the dashboard card (name + monogram derive from the bundle).
+        if let Some(mut bundle) = self.store.load_one(id.as_ref()) {
+            bundle.name = name.clone();
+            bundle.updated = crate::store::now_secs();
+            if let Err(e) = self.store.save(&bundle) {
+                error!(error = %e, %id, "failed to persist rename");
+            }
+            if let Some(slot) = self.projects.iter_mut().find(|p| p.id == id) {
+                *slot = project_from_bundle(&bundle);
+            }
+        }
+        info!(%id, %name, "renamed project");
+        self.modal = None;
         cx.notify();
     }
     pub fn request_exit(&mut self, cx: &mut Context<Self>) {
@@ -995,6 +1092,9 @@ impl StudioApp {
     pub fn close_modal(&mut self, cx: &mut Context<Self>) {
         self.modal = None;
         self.share_menu = None;
+        // Cancelling a delete/rename dialog abandons its target.
+        self.pending_delete = None;
+        self.pending_rename = None;
         cx.notify();
     }
     pub fn open_profile(&mut self, cx: &mut Context<Self>) {
@@ -1157,10 +1257,16 @@ impl StudioApp {
         self.push_msg(Role::Assistant, "Caught a runtime error in the preview — trying to fix it without touching your design\u{2026}");
         cx.notify();
 
+        // The exact error text, kept for the give-up branch (the heal moves `message`)
+        // so we can surface it in the banner + Activity log and feed the explicit fix.
+        let err_text: SharedString = message.clone().into();
         self.pipeline_task = Some(cx.spawn(async move |this, cx| {
+            // Automatic heal: design-freeze ON — a silent fix may only touch logic. A
+            // style-caused error can't be healed this way, so it's surfaced for an
+            // explicit "Fix with AI" (which runs the freeze OFF).
             let result = cx
                 .background_executor()
-                .spawn(async move { wf_core::self_heal(&*provider, &source, &message, &config) })
+                .spawn(async move { wf_core::self_heal(&*provider, &source, &message, &config, true) })
                 .await;
             let _ = this.update(cx, |a, cx| {
                 a.busy = false;
@@ -1169,6 +1275,7 @@ impl StudioApp {
                         info!(attempts = outcome.attempts, "self_heal: fixed runtime error");
                         debug!(source = %log_preview(&outcome.source, 400), "self_heal: healed source");
                         trace!(source_full = %outcome.source, "self_heal: full healed source");
+                        a.last_error = None;
                         a.project.set_source(&file, outcome.source);
                         a.recompile_and_reload(cx);
                         a.record_compile(true, format!("Self-healed a runtime error in {} attempt(s)", outcome.attempts), None);
@@ -1179,16 +1286,113 @@ impl StudioApp {
                         a.show_toast(ToastTone::Success, "Self-healed a runtime error \u{2014} your design was untouched.", cx);
                     }
                     Err(e) => {
-                        // Non-blocking: flag it and keep the app usable (FR-22).
+                        // Non-blocking: flag it and keep the app usable (FR-22). Record it
+                        // in the Activity log and surface a "Fix with AI" affordance
+                        // (banner + Activity) that runs a design-changing fix on request.
                         error!(error = %friendly(&e), "self_heal: could not fix runtime error safely");
                         a.status = Status::Error;
-                        a.push_msg(Role::Assistant, format!("A runtime error needs your attention — I couldn't fix it safely without changing the design: {}", friendly(&e)));
-                        a.show_toast(ToastTone::Idle, "A runtime error needs attention \u{2014} see the chat.", cx);
+                        a.last_error = Some(err_text.clone());
+                        a.record_compile(false, "Runtime error in the preview", Some(err_text.clone()));
+                        a.push_msg(Role::Assistant, format!("A runtime error needs your attention — I couldn't fix it without changing your design. Use \u{201c}Fix with AI\u{201d} above the composer to let me correct it: {}", friendly(&e)));
+                        a.show_toast(ToastTone::Idle, "A runtime error needs attention \u{2014} use \u{201c}Fix with AI\u{201d}.", cx);
                     }
                 }
                 cx.notify();
             });
         }));
+    }
+
+    /// User-invoked repair of the last unresolved error (the banner / Activity
+    /// "Fix with AI" button). Unlike the automatic heal, this runs the design-freeze
+    /// OFF — the user explicitly asked for a fix, so it may adjust styling or values
+    /// when that is what's broken (e.g. an invalid `font-size: xl` style token).
+    pub fn fix_last_error(&mut self, cx: &mut Context<Self>) {
+        self.fix_last_error_with(None, cx);
+    }
+
+    /// The banner/Activity buttons call [`fix_last_error`]; the composer routes a
+    /// typed fix request here with the user's words as extra `guidance` so a nuanced
+    /// ask ("fix it but keep it blue") still lands.
+    pub fn fix_last_error_with(&mut self, guidance: Option<String>, cx: &mut Context<Self>) {
+        if self.busy || !self.generated || self.proposal.is_some() {
+            return;
+        }
+        let Some(message) = self.last_error.as_ref().map(|s| s.to_string()) else { return };
+        let file = "src/pages/Home.wf".to_string();
+        let Some(source) = self.project.file_source(&file).map(str::to_string) else { return };
+        let key = self.key_text(cx).trim().to_string();
+        if key.is_empty() {
+            self.push_msg(Role::Assistant, "I need an API key to fix this — add one in Settings, then try again.");
+            self.show_toast(ToastTone::Idle, "Add an API key to let the AI fix this.", cx);
+            cx.notify();
+            return;
+        }
+
+        let kind = self.provider_kind();
+        let mut config = wf_core::GenConfig::for_model(self.current_model());
+        config.max_tokens = 8192;
+        let provider = wf_ai::provider_for(kind, key);
+
+        // Fold the user's typed request (if any) into the error the model repairs.
+        let guidance = guidance.map(|g| g.trim().to_string()).filter(|g| !g.is_empty());
+        let heal_input = match &guidance {
+            Some(g) => format!("{message}\n\nThe user also asked, while fixing it: {g}"),
+            None => message.clone(),
+        };
+
+        // Let the automatic heal run again on the next runtime error after this edit.
+        self.heal_tried = None;
+        warn!(provider = ?kind, model = %self.current_model(), has_guidance = guidance.is_some(), error = %log_preview(&message, 400), "fix_last_error: user-invoked fix (freeze off)");
+        self.busy = true;
+        self.status = Status::Compiling;
+        self.push_msg(Role::Assistant, "Fixing the error\u{2026} I may adjust styling or values if that's what's broken.");
+        cx.notify();
+
+        self.pipeline_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wf_core::self_heal(&*provider, &source, &heal_input, &config, false) })
+                .await;
+            let _ = this.update(cx, |a, cx| {
+                a.busy = false;
+                match result {
+                    Ok(outcome) => {
+                        info!(attempts = outcome.attempts, "fix_last_error: fixed the error");
+                        trace!(source_full = %outcome.source, "fix_last_error: full fixed source");
+                        a.last_error = None;
+                        a.status = Status::Compiled;
+                        a.project.set_source(&file, outcome.source);
+                        a.recompile_and_reload(cx);
+                        a.record_compile(true, format!("Fixed an error with AI in {} attempt(s)", outcome.attempts), None);
+                        a.save_active_project();
+                        a.history.checkpoint("Fixed an error with AI", a.project.snapshot());
+                        a.push_msg(Role::Assistant, format!("Fixed it in {} attempt(s).", outcome.attempts));
+                        a.show_toast(ToastTone::Success, "Fixed the error.", cx);
+                    }
+                    Err(e) => {
+                        error!(error = %friendly(&e), "fix_last_error: could not fix the error");
+                        a.status = Status::Error;
+                        a.push_msg(Role::Assistant, format!("I still couldn't fix it: {}. You can edit the element directly or try a different model.", friendly(&e)));
+                        a.show_toast(ToastTone::Idle, "Couldn't fix it automatically \u{2014} see the chat.", cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// The unresolved-error text for the composer banner / Activity, if any.
+    pub fn error_banner(&self) -> Option<SharedString> {
+        self.last_error.clone()
+    }
+
+    /// Dismiss the error banner without fixing it (the ✕ on the banner).
+    pub fn dismiss_error(&mut self, cx: &mut Context<Self>) {
+        self.last_error = None;
+        if self.status == Status::Error {
+            self.status = if self.generated { Status::Compiled } else { Status::Idle };
+        }
+        cx.notify();
     }
 
 
@@ -1260,6 +1464,16 @@ impl StudioApp {
 
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.prompt_text(cx);
+        // With an error pending, a typed fix request ("fix the runtime error") routes
+        // to the heal — not a from-scratch build (which is what silently swallowed it
+        // before). The typed words ride along as guidance.
+        if self.last_error.is_some() && self.proposal.is_none() && wants_error_fix(&text) {
+            debug!(len = text.len(), "send_prompt: routing to fix_last_error (pending error + fix intent)");
+            self.push_msg(Role::User, text.clone());
+            self.set_prompt("", window, cx);
+            self.fix_last_error_with(Some(text), cx);
+            return;
+        }
         // A pending proposal → refine it (FR-8); a selected element → a scoped edit;
         // otherwise generate.
         debug!(
@@ -2263,9 +2477,41 @@ fn friendly(msg: impl std::fmt::Display) -> String {
     s.trim().to_string()
 }
 
+/// Whether a composer message reads as a request to fix the pending error — so it
+/// routes to the heal instead of a from-scratch build. Requires a fix verb *and* an
+/// error noun (or a bare "fix it"-style phrase), so a design edit like "fix the
+/// header color" is NOT hijacked.
+fn wants_error_fix(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+    let has_fix_verb = ["fix", "repair", "resolve", "debug", "heal"].iter().any(|w| t.contains(w));
+    let has_error_noun = [
+        "error", "runtime", "bug", "crash", "broke", "broken", "issue", "problem",
+        "exception", "not working", "doesn't work", "won't load", "blank", "white screen",
+    ]
+    .iter()
+    .any(|w| t.contains(w));
+    let standalone = matches!(t.as_str(), "fix" | "fix it" | "fix this" | "fix that" | "please fix" | "fix please" | "fix it please");
+    (has_fix_verb && has_error_noun) || standalone
+}
+
 #[cfg(test)]
 mod tests {
-    use super::friendly;
+    use super::{friendly, wants_error_fix};
+
+    #[test]
+    fn fix_intent_matches_error_requests_but_not_design_edits() {
+        assert!(wants_error_fix("fix the runtime error"));
+        assert!(wants_error_fix("please fix this bug"));
+        assert!(wants_error_fix("the preview is broken, repair it"));
+        assert!(wants_error_fix("fix it"));
+        // Must NOT hijack ordinary design edits or empty input.
+        assert!(!wants_error_fix("fix the header color"));
+        assert!(!wants_error_fix("make the button bigger"));
+        assert!(!wants_error_fix(""));
+    }
 
     #[test]
     fn friendly_strips_file_coordinates() {

@@ -1,7 +1,7 @@
 //! Home dashboard: a grid of the user's projects, with filter tabs and a
 //! "New project" entry point.
 
-use gpui::{App, ClickEvent, Context, Window, div, prelude::*, px};
+use gpui::{App, ClickEvent, Context, SharedString, Window, div, prelude::*, px};
 use gpui_component::{StyledExt, h_flex, v_flex};
 
 use crate::app::StudioApp;
@@ -67,7 +67,7 @@ fn header(cx: &mut Context<StudioApp>) -> impl IntoElement {
                 )
                 .child(div().mt(px(7.0)).text_size(px(14.5)).text_color(theme::text_muted()).child("Pick up a project, or start something new.")),
         )
-        .child(Btn::primary("New project").icon("plus").render("new-proj-top", cx.listener(|a, _, _, cx| a.new_project(cx))))
+        .child(Btn::primary("New project").icon("plus").render("new-proj-top", cx.listener(|a, _, window, cx| a.new_project(window, cx))))
 }
 
 fn tabs_row(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
@@ -141,7 +141,7 @@ fn new_card(cx: &mut Context<StudioApp>) -> impl IntoElement {
         .text_color(theme::text_muted())
         .cursor_pointer()
         .hover(|s| s.border_color(theme::accent_ring()).bg(theme::accent_tint()).text_color(theme::text_strong()))
-        .on_click(cx.listener(|a, _, _, cx| a.new_project(cx)))
+        .on_click(cx.listener(|a, _, window, cx| a.new_project(window, cx)))
         .child(
             div()
                 .size(px(46.0))
@@ -158,9 +158,55 @@ fn new_card(cx: &mut Context<StudioApp>) -> impl IntoElement {
 fn project_card(idx: usize, p: Project, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
     let id = p.id.clone();
     let mono = p.mono.clone();
+    // Wrapper owns the width; the clickable body + the action overlay are SIBLINGS,
+    // so tapping rename/delete never propagates into the body's open_project click.
+    let actions_id = p.id.clone();
+    div()
+        .id(("proj-wrap", idx))
+        .relative()
+        .w(px(CARD_W))
+        // Body first, action overlay second — the later sibling paints on top and
+        // is hit-tested first, so the buttons win the click over the body.
+        .child(project_card_body(idx, p, mono, id, cx))
+        .child(card_actions(idx, actions_id, cx))
+}
+
+/// Hover-revealed rename/delete buttons pinned to the card's top-right corner.
+fn card_actions(idx: usize, id: SharedString, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    let id_ren = id.clone();
+    h_flex()
+        // `occlude` makes these buttons opaque to mouse events, so a click on them
+        // never falls through to the card body's open_project handler underneath.
+        .occlude()
+        .absolute()
+        .top(px(9.0))
+        .right(px(9.0))
+        .gap(px(6.0))
+        .child(action_btn(("proj-rename", idx), "pencil", theme::text_soft(), cx.listener(move |a, _, window, cx| a.request_rename(id_ren.clone(), window, cx))))
+        .child(action_btn(("proj-delete", idx), "trash", theme::danger(), cx.listener(move |a, _, _, cx| a.request_delete(id.clone(), cx))))
+}
+
+fn action_btn(id: (&'static str, usize), ic: &'static str, color: gpui::Hsla, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement {
+    div()
+        .id(id)
+        .size(px(26.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(theme::black(0.55))
+        .border_1()
+        .border_color(theme::line_faint())
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::black(0.78)))
+        .child(icon(ic, 13.0, color))
+        .on_click(on_click)
+}
+
+fn project_card_body(idx: usize, p: Project, mono: SharedString, id: SharedString, cx: &mut Context<StudioApp>) -> impl IntoElement {
     v_flex()
         .id(("proj", idx))
-        .w(px(CARD_W))
+        .w_full()
         .min_h(px(168.0))
         .rounded(px(theme::RADIUS_LG))
         .border_1()

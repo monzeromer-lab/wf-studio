@@ -295,7 +295,77 @@ fn composer(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
                 ),
         );
 
-    v_flex().flex_none().px(px(16.0)).pt(px(14.0)).pb(px(16.0)).child(dock)
+    v_flex()
+        .flex_none()
+        .px(px(16.0))
+        .pt(px(14.0))
+        .pb(px(16.0))
+        .gap(px(10.0))
+        .when_some(app.error_banner().filter(|_| !app.busy), |this, msg| this.child(error_banner(msg, cx)))
+        .child(dock)
+}
+
+/// A dismissible error banner above the composer: shown when a runtime/compile
+/// error is unresolved, with a "Fix with AI" button (runs a design-changing fix
+/// on request) and a ✕ to dismiss. Mirrors the Activity-log affordance.
+fn error_banner(msg: SharedString, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .items_start()
+        .gap(px(10.0))
+        .px(px(12.0))
+        .py(px(11.0))
+        .rounded(px(theme::RADIUS_MD))
+        .bg(theme::danger_tint())
+        .border_1()
+        .border_color(theme::danger())
+        .child(div().flex_none().mt(px(1.0)).child(icon("alert-triangle", 16.0, theme::danger())))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.0))
+                .child(div().text_size(px(12.5)).font_semibold().text_color(theme::text_strong()).child("A preview error needs fixing"))
+                .child(div().text_size(px(11.5)).text_color(theme::text_soft()).line_height(px(16.0)).child(msg)),
+        )
+        .child(
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    h_flex()
+                        .id("err-fix")
+                        .h(px(30.0))
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(12.0))
+                        .rounded_full()
+                        .bg(theme::danger())
+                        .text_size(px(12.0))
+                        .font_semibold()
+                        .text_color(theme::accent_contrast())
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.9))
+                        .child(icon("sparkle", 14.0, theme::accent_contrast()))
+                        .child("Fix with AI")
+                        .on_click(cx.listener(|a, _, _, cx| a.fix_last_error(cx))),
+                )
+                .child(
+                    div()
+                        .id("err-dismiss")
+                        .size(px(30.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .text_color(theme::text_soft())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::bg_hover()).text_color(theme::text_strong()))
+                        .child(icon("close", 14.0, theme::text_soft()))
+                        .on_click(cx.listener(|a, _, _, cx| a.dismiss_error(cx))),
+                ),
+        )
 }
 
 // ── composer buttons ─────────────────────────────────────────────────────────

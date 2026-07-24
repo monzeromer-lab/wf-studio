@@ -287,23 +287,42 @@ impl std::fmt::Display for HealError {
 impl std::error::Error for HealError {}
 
 /// Repair a runtime error in a *compiling* page (FR-19–22 / §4.6). The model is
-/// asked to fix only the cause; each candidate must compile AND pass the
-/// **design-freeze**: it may not change anything visible (no `Text`/`Style`/
-/// `Structure` diff — only invisible logic like state/actions/handlers). A fix
-/// that alters the design is rejected and re-prompted — the AST paying rent, not
-/// a prompt-hope. Bounded by `max_attempts`.
+/// asked to fix the cause; every candidate must compile and differ from the
+/// broken page (a no-op "fix" is rejected so it can't loop).
+///
+/// `freeze_design` picks the strictness:
+/// - `true` (automatic heal): the fix must ALSO pass the **design-freeze** — it may
+///   not change anything visible (no `Text`/`Style`/`Structure` diff, only invisible
+///   logic like state/actions/handlers). A style-caused error can't be healed this
+///   way, so the studio surfaces it for an explicit fix instead of silently
+///   restyling the page.
+/// - `false` (user asked to fix it): the design-freeze is dropped — the fix may
+///   adjust styling/values if that's what's broken (e.g. an invalid style token
+///   like `font-size: xl`). Still bounded, still must compile.
 pub fn self_heal(
     provider: &dyn Provider,
     base_source: &str,
     runtime_error: &str,
     config: &GenConfig,
+    freeze_design: bool,
 ) -> Result<HealOutcome, HealError> {
-    let system = format!(
-        "{LANGUAGE_CARD}\n\n# FIX MODE\nA compiled page threw a runtime error. Return the \
-         corrected, COMPLETE page in one ```wf block. Fix ONLY the cause of the error — do NOT \
-         change any visible text, layout, styling, modifiers, or components. Change only logic: \
-         state, derived, actions, event handlers, and expressions."
-    );
+    let system = if freeze_design {
+        format!(
+            "{LANGUAGE_CARD}\n\n# FIX MODE\nA compiled page threw a runtime error. Return the \
+             corrected, COMPLETE page in one ```wf block. Fix ONLY the cause of the error — do NOT \
+             change any visible text, layout, styling, modifiers, or components. Change only logic: \
+             state, derived, actions, event handlers, and expressions."
+        )
+    } else {
+        format!(
+            "{LANGUAGE_CARD}\n\n# FIX MODE\nA compiled page threw a runtime error. Return the \
+             corrected, COMPLETE page in one ```wf block. Fix the cause of the error. If the error \
+             comes from an invalid value (for example an unknown style token, an undefined variable, \
+             or a bad expression), correct that value — you MAY change styling or values when that is \
+             what is broken. Keep the page's content and intent the same and change as little as \
+             possible."
+        )
+    };
     info!(
         error_len = runtime_error.len(),
         error_preview = %preview(runtime_error, 400),
@@ -347,7 +366,7 @@ pub fn self_heal(
             }
         };
 
-        match validate_fix(base_source, &fix) {
+        match validate_fix(base_source, &fix, freeze_design) {
             Ok(()) => {
                 info!(attempts, source_len = fix.len(), "self_heal succeeded");
                 return Ok(HealOutcome { source: fix, attempts });
@@ -368,18 +387,25 @@ pub fn self_heal(
     }
 }
 
-/// A fix passes if it compiles and the design-freeze holds: it changed no element,
-/// modifier, or style block (position-independent, so a logic fix that shifts ids
-/// is fine). Text and logic may change; layout/styling may not.
-fn validate_fix(base: &str, fix: &str) -> Result<(), String> {
+/// A fix passes if it compiles and actually changes the broken page (a byte-identical
+/// return is a non-fix that would just re-throw, so it's rejected and re-prompted).
+/// When `freeze_design` is set it must ALSO hold the design-freeze: it changed no
+/// element, modifier, or style block (position-independent, so a logic fix that shifts
+/// ids is fine). Text and logic may change; layout/styling may not.
+fn validate_fix(base: &str, fix: &str, freeze_design: bool) -> Result<(), String> {
     if let Err(e) = compile_source(fix) {
         warn!(error = %e, "self_heal fix did not compile");
         return Err(format!("it didn't compile: {e}"));
     }
-    let preserved = crate::diff::design_preserved(base, fix).map_err(|e| format!("couldn't compare it: {e}"))?;
-    debug!(design_preserved = preserved, "self_heal design-freeze check");
-    if !preserved {
-        return Err("it changed the visible design (layout, styling, or components)".to_string());
+    if fix.trim() == base.trim() {
+        return Err("the fix was identical to the broken page, so it wouldn't clear the error".to_string());
+    }
+    if freeze_design {
+        let preserved = crate::diff::design_preserved(base, fix).map_err(|e| format!("couldn't compare it: {e}"))?;
+        debug!(design_preserved = preserved, "self_heal design-freeze check");
+        if !preserved {
+            return Err("it changed the visible design (layout, styling, or components)".to_string());
+        }
     }
     Ok(())
 }
@@ -556,7 +582,7 @@ mod tests {
     #[test]
     fn self_heal_accepts_a_logic_only_fix() {
         let p = ScriptedProvider::with_text(LOGIC_FIX);
-        let out = self_heal(&p, BUGGY, "ReferenceError: count is not defined", &cfg()).unwrap();
+        let out = self_heal(&p, BUGGY, "ReferenceError: count is not defined", &cfg(), true).unwrap();
         assert_eq!(out.attempts, 1);
         assert!(out.source.contains("state count"));
         assert!(!out.source.contains("bold"));
@@ -566,7 +592,7 @@ mod tests {
     fn design_freeze_rejects_a_visible_change_then_accepts_a_clean_fix() {
         let p = ScriptedProvider::new(ProviderKind::Anthropic);
         p.push_text(STYLE_FIX).push_text(LOGIC_FIX); // style change rejected, then clean
-        let out = self_heal(&p, BUGGY, "ReferenceError", &cfg()).unwrap();
+        let out = self_heal(&p, BUGGY, "ReferenceError", &cfg(), true).unwrap();
         assert_eq!(out.attempts, 2, "the bold-adding fix was rejected by the design-freeze");
         assert!(!out.source.contains("bold"));
     }
@@ -575,14 +601,35 @@ mod tests {
     fn self_heal_gives_up_if_every_fix_changes_the_design() {
         let p = ScriptedProvider::new(ProviderKind::Anthropic);
         p.push_text(STYLE_FIX).push_text(STYLE_FIX).push_text(STYLE_FIX);
-        assert!(matches!(self_heal(&p, BUGGY, "err", &cfg()), Err(HealError::GaveUp { .. })));
+        assert!(matches!(self_heal(&p, BUGGY, "err", &cfg(), true), Err(HealError::GaveUp { .. })));
     }
 
     #[test]
     fn self_heal_retries_a_non_compiling_fix() {
         let p = ScriptedProvider::new(ProviderKind::Anthropic);
         p.push_text("```wf\nPage Home (path: \"/\") { Ghost() }\n```").push_text(LOGIC_FIX);
-        let out = self_heal(&p, BUGGY, "err", &cfg()).unwrap();
+        let out = self_heal(&p, BUGGY, "err", &cfg(), true).unwrap();
         assert_eq!(out.attempts, 2);
+    }
+
+    // ── user-invoked fix (design-freeze OFF, M-next) ──────────────────────────
+    #[test]
+    fn unfrozen_heal_accepts_a_style_change_the_freeze_would_reject() {
+        // The bold-adding fix changes the visible design, so the frozen heal rejects
+        // it — but the user explicitly asked to fix it, so the unfrozen heal takes it.
+        let p = ScriptedProvider::with_text(STYLE_FIX);
+        let out = self_heal(&p, BUGGY, "ReferenceError", &cfg(), false).unwrap();
+        assert_eq!(out.attempts, 1, "a style-changing fix is accepted when the freeze is off");
+        assert!(out.source.contains("bold"));
+    }
+
+    #[test]
+    fn a_no_op_fix_is_rejected_so_it_cannot_falsely_succeed() {
+        // Returning the broken page unchanged compiles but would just re-throw; the
+        // identical-source guard rejects it (and, with one attempt, gives up).
+        let unchanged = format!("```wf\n{BUGGY}\n```");
+        let p = ScriptedProvider::new(ProviderKind::Anthropic);
+        p.push_text(&unchanged).push_text(&unchanged).push_text(&unchanged);
+        assert!(matches!(self_heal(&p, BUGGY, "err", &cfg(), false), Err(HealError::GaveUp { .. })));
     }
 }

@@ -456,6 +456,23 @@ mod tests {
     }
 
     #[test]
+    fn style_token_keywords_resolve_to_css_vars_not_undefined_signals() {
+        // Field report: `font-size: xl` compiled but threw `ReferenceError: … _xl` at
+        // runtime because a bare token keyword fell through to the reactive-signal path.
+        // It must now resolve to the documented `var(--font-size-xl)` token reference.
+        let src = "Page Home (path: \"/\") {\n  Container {\n    style {\n      font-size: xl\n      padding: md\n      background: surface\n      radius: md\n    }\n    Text(\"hi\")\n  }\n}\n";
+        let site = compile_source(src).expect("a page using style tokens must compile");
+        let html = &site.pages[0].html;
+        assert!(html.contains("font-size: var(--font-size-xl)"), "font-size token unresolved, got: {html}");
+        assert!(html.contains("padding: var(--spacing-md)"), "padding token unresolved, got: {html}");
+        assert!(html.contains("background: var(--color-surface)"), "background token unresolved, got: {html}");
+        // `radius` must also alias to the real CSS property.
+        assert!(html.contains("border-radius: var(--radius-md)"), "radius alias/token unresolved, got: {html}");
+        // The broken reactive-signal form must be gone from the static paint.
+        assert!(!html.contains("_xl"), "must not emit an undefined `_xl` signal reference");
+    }
+
+    #[test]
     fn outline_reflects_the_node_tree() {
         let p = WfProject::seed();
         let tree = p.outline();

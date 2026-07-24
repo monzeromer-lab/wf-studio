@@ -15,6 +15,8 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
     };
     let body = match modal {
         Modal::NewProject => new_project(app, cx).into_any_element(),
+        Modal::RenameProject => rename_project(app, cx).into_any_element(),
+        Modal::ConfirmDelete => confirm_delete(app, cx).into_any_element(),
         Modal::Exit => exit(cx).into_any_element(),
         Modal::SwapDs => swap_ds(app, cx).into_any_element(),
         Modal::Compile => compile(app, cx).into_any_element(),
@@ -98,21 +100,96 @@ fn new_project(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement
             h_flex()
                 .w_full()
                 .px(px(24.0))
-                .py(px(20.0))
+                .pt(px(20.0))
                 .gap(px(12.0))
                 .child(type_card("nt-web", "globe-big", theme::accent_tint(), theme::accent(), "Design project", "A website, landing page, or app \u{2014} built by conversation.", web, cx.listener(|a, _, _, cx| a.set_new_type(ProjectKind::Website, cx))))
                 .child(type_card("nt-sys", "boxes", theme::violet_tint(), theme::violet_soft(), "Design system", "A reusable kit of tokens, type and components your projects build from.", !web, cx.listener(|a, _, _, cx| a.set_new_type(ProjectKind::System, cx)))),
         )
         .child(
+            v_flex()
+                .w_full()
+                .px(px(24.0))
+                .pt(px(18.0))
+                .gap(px(7.0))
+                .child(field_label("Project name"))
+                .child(text_field(&app.new_name)),
+        )
+        .child(
             h_flex()
                 .w_full()
                 .px(px(24.0))
+                .pt(px(20.0))
                 .pb(px(22.0))
                 .gap(px(10.0))
                 .justify_end()
                 .child(Btn::secondary("Cancel").render("np-cancel", cx.listener(|a, _, _, cx| a.close_modal(cx))))
                 .child(Btn::primary("Create").icon_right("arrow-right").render("np-create", cx.listener(|a, _, window, cx| a.create_project(window, cx)))),
         )
+}
+
+/// A small field caption above an input.
+fn field_label(text: &'static str) -> impl IntoElement {
+    div().text_size(px(12.0)).font_semibold().text_color(theme::text_soft()).child(text)
+}
+
+/// A bordered single-line text input styled to match the modal fields.
+fn text_field(state: &gpui::Entity<gpui_component::input::InputState>) -> impl IntoElement {
+    div()
+        .w_full()
+        .px(px(12.0))
+        .py(px(9.0))
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_color(theme::line_strong())
+        .bg(theme::bg_sunken())
+        .child(Input::new(state).appearance(false).text_size(px(13.5)))
+}
+
+// ── Rename project ──────────────────────────────────────────────────────────────
+fn rename_project(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    card(440.0)
+        .child(h_flex().w_full().px(px(24.0)).pt(px(22.0)).items_start().gap(px(13.0)).child(tile("pencil", theme::accent_tint(), theme::accent())).child(heading("Rename project", "Give it a name you'll recognize.")).child(close_btn(cx)))
+        .child(v_flex().w_full().px(px(24.0)).pt(px(18.0)).gap(px(7.0)).child(field_label("Project name")).child(text_field(&app.rename_input)))
+        .child(
+            h_flex()
+                .w_full()
+                .px(px(24.0))
+                .pt(px(20.0))
+                .pb(px(22.0))
+                .gap(px(10.0))
+                .justify_end()
+                .child(Btn::secondary("Cancel").render("rn-cancel", cx.listener(|a, _, _, cx| a.close_modal(cx))))
+                .child(Btn::primary("Save").render("rn-save", cx.listener(|a, _, _, cx| a.confirm_rename(cx)))),
+        )
+}
+
+// ── Confirm delete ──────────────────────────────────────────────────────────────
+fn confirm_delete(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+    let name = app.pending_delete_name();
+    card(420.0).child(
+        v_flex()
+            .p(px(24.0))
+            .child(h_flex().items_center().gap(px(12.0)).child(tile("trash", theme::danger_tint(), theme::danger())).child(div().font_family(theme::FONT_DISPLAY).text_size(px(17.0)).font_semibold().text_color(theme::text_strong()).child("Delete this project?")))
+            .child(
+                h_flex()
+                    .mt(px(12.0))
+                    .flex_wrap()
+                    .gap(px(4.0))
+                    .text_size(px(13.0))
+                    .text_color(theme::text_muted())
+                    .child("Permanently delete")
+                    .child(div().font_semibold().text_color(theme::text_strong()).child(name))
+                    .child("and its WebFluent sources. This can't be undone."),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .mt(px(20.0))
+                    .gap(px(10.0))
+                    .child(Btn::secondary("Cancel").grow().render("del-cancel", cx.listener(|a, _, _, cx| a.close_modal(cx))))
+                    .child(Btn::primary("Delete").grow().icon("trash").render("del-go", cx.listener(|a, _, _, cx| a.confirm_delete(cx)))),
+            ),
+    )
 }
 
 fn type_card(id: &'static str, icon_name: &'static str, icon_bg: Hsla, icon_fg: Hsla, title: &'static str, desc: &'static str, selected: bool, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement {
@@ -191,6 +268,33 @@ fn swap_ds(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
 fn compile(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
     card(500.0)
         .child(h_flex().w_full().px(px(24.0)).pt(px(22.0)).items_start().gap(px(13.0)).child(tile("check-circle", theme::bg_raised(), theme::success())).child(heading("Activity", "Every build in this session — what compiled, and any errors WebFluent hit or healed.")).child(close_btn(cx)))
+        // A live "Fix with AI" callout when there's an unresolved error — the same
+        // action as the composer banner, so the log is where you can act on errors.
+        .when_some(app.error_banner(), |c, msg| {
+            c.child(
+                v_flex()
+                    .mx(px(24.0))
+                    .mt(px(16.0))
+                    .p(px(14.0))
+                    .gap(px(10.0))
+                    .rounded(px(12.0))
+                    .bg(theme::danger_tint())
+                    .border_1()
+                    .border_color(theme::danger())
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(9.0))
+                            .child(icon("alert-triangle", 16.0, theme::danger()))
+                            .child(div().flex_1().text_size(px(13.0)).font_semibold().text_color(theme::text_strong()).child("An error needs your attention"))
+                            .child(Btn::primary("Fix with AI").icon("sparkle").render("act-fix", cx.listener(|a, _, _, cx| {
+                                a.close_modal(cx);
+                                a.fix_last_error(cx);
+                            }))),
+                    )
+                    .child(div().px(px(11.0)).py(px(9.0)).rounded(px(8.0)).bg(theme::bg_sunken()).border_1().border_color(theme::line_faint()).font_family(theme::FONT_MONO).text_size(px(11.5)).text_color(theme::text_caption()).line_height(px(18.0)).child(msg)),
+            )
+        })
         .child(v_flex().px(px(24.0)).pt(px(16.0)).pb(px(22.0)).gap(px(10.0)).children(app.compile_log().into_iter().map(|c| {
             let note_color = match c.note_tone {
                 crate::state::Tone::Err => theme::danger(),

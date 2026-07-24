@@ -107,6 +107,7 @@ const ICONS: &[(&str, &str)] = &[
     ("link", stroke_icon!("1.85", "<path d=\"M9 15l6-6\"/><path d=\"M11 6l1-1a4 4 0 0 1 6 6l-1 1\"/><path d=\"M13 18l-1 1a4 4 0 0 1-6-6l1-1\"/>")),
     ("copy", stroke_icon!("1.85", "<rect x=\"9\" y=\"9\" width=\"11\" height=\"11\" rx=\"2\"/><path d=\"M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1\"/>")),
     ("trash", stroke_icon!("1.85", "<path d=\"M3 6h18\"/><path d=\"M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2\"/><path d=\"M6 6l1 14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-14\"/>")),
+    ("pencil", stroke_icon!("1.85", "<path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z\"/>")),
     ("download", stroke_icon!("1.85", "<path d=\"M12 3v12\"/><path d=\"M7 11l5 5 5-5\"/><path d=\"M5 21h14\"/>")),
     ("user", stroke_icon!("1.85", "<circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21v-1a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v1\"/>")),
     ("server", stroke_icon!("1.85", "<rect x=\"3\" y=\"4\" width=\"18\" height=\"8\" rx=\"2\"/><rect x=\"3\" y=\"12\" width=\"18\" height=\"8\" rx=\"2\"/><path d=\"M6 8h.01M6 16h.01\"/>")),

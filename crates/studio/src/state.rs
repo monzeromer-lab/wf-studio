@@ -23,6 +23,8 @@ pub enum Screen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modal {
     NewProject,
+    RenameProject,
+    ConfirmDelete,
     Exit,
     SwapDs,
     Compile,
