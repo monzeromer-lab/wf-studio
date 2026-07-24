@@ -44,9 +44,11 @@ pub struct StudioApp {
     pub prompt: Entity<InputState>,
     pub messages: Vec<Message>,
     pub review_open: bool,
-    /// The pending AI edit under review (real chips), and the file it edits.
+    /// The pending AI edit under review (real chips), the file it edits, and the
+    /// node it targets (for inline re-prompt, FR-8).
     proposal: Option<wf_core::Proposal>,
     proposal_file: Option<String>,
+    proposal_node: Option<String>,
     pub pruning: bool,
     pub caching: bool,
     pub heal_attempts: u8,
@@ -216,6 +218,7 @@ impl StudioApp {
             review_open: false,
             proposal: None,
             proposal_file: None,
+            proposal_node: None,
             pruning: true,
             caching: true,
             heal_attempts: 3,
@@ -722,8 +725,11 @@ impl StudioApp {
 
     pub fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.prompt_text(cx);
-        // A selected element + an instruction is a scoped edit; otherwise generate.
-        if self.generated && !self.sel_nodes.is_empty() {
+        // A pending proposal → refine it (FR-8); a selected element → a scoped edit;
+        // otherwise generate.
+        if self.proposal.is_some() {
+            self.reprompt(text, window, cx);
+        } else if self.generated && !self.sel_nodes.is_empty() {
             self.edit(text, window, cx);
         } else {
             self.build(text, window, cx);
@@ -961,7 +967,28 @@ impl StudioApp {
         let Some(resolved) = self.project.resolve_node(&node_id) else { return };
         let file = resolved.file.clone();
         let Some(base) = self.project.file_source(&file).map(str::to_string) else { return };
+        self.run_edit(base, node_id.to_string(), file, instruction, window, cx);
+    }
 
+    /// Refine the pending proposal with a follow-up instruction (FR-8): edit the
+    /// same node in the CURRENT proposal, but keep diffing against the original
+    /// base so the review still shows the whole change from the live document.
+    pub fn reprompt(&mut self, instruction: String, window: &mut Window, cx: &mut Context<Self>) {
+        let instruction = instruction.trim().to_string();
+        if instruction.is_empty() || self.busy {
+            return;
+        }
+        let (Some(node), Some(file)) = (self.proposal_node.clone(), self.proposal_file.clone()) else {
+            return;
+        };
+        let Some(edit_base) = self.proposal.as_ref().map(|p| p.proposal().to_string()) else { return };
+        self.run_edit(edit_base, node, file, instruction, window, cx);
+    }
+
+    /// Shared edit spine: run `edit_node` on `edit_base` off-thread, then diff the
+    /// result against the live (unapplied) file source into a `Proposal`. `edit`
+    /// passes the original file as `edit_base`; `reprompt` passes the current proposal.
+    fn run_edit(&mut self, edit_base: String, node: String, file: String, instruction: String, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.key_text(cx).trim().to_string();
         if key.is_empty() {
             self.push_msg(Role::Assistant, "Add a provider API key in Settings, then send your edit again.");
@@ -975,7 +1002,7 @@ impl StudioApp {
         let mut config = wf_core::GenConfig::for_model(kind.default_model());
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
-        let node_id = node_id.to_string();
+        let node_for_edit = node.clone();
 
         self.push_msg(Role::User, instruction.clone());
         self.set_prompt("", window, cx);
@@ -986,18 +1013,21 @@ impl StudioApp {
         self.pipeline_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { wf_core::edit_node(&*provider, &base, &node_id, &instruction, &config) })
+                .spawn(async move { wf_core::edit_node(&*provider, &edit_base, &node_for_edit, &instruction, &config) })
                 .await;
             let _ = this.update(cx, |a, cx| {
                 a.busy = false;
                 match result {
                     Ok(outcome) => {
-                        let base_now = a.project.file_source(&file).unwrap_or_default().to_string();
-                        match wf_core::Proposal::new(base_now, outcome.source) {
+                        // Diff against the live file source (unchanged until Apply),
+                        // so re-prompts still show the full change from the document.
+                        let diff_base = a.project.file_source(&file).unwrap_or_default().to_string();
+                        match wf_core::Proposal::new(diff_base, outcome.source) {
                             Ok(proposal) => {
                                 let n = proposal.len();
                                 a.proposal = Some(proposal);
                                 a.proposal_file = Some(file);
+                                a.proposal_node = Some(node);
                                 a.selection.clear();
                                 a.sel_nodes.clear();
                                 a.highlight_nodes(cx);
@@ -1006,7 +1036,7 @@ impl StudioApp {
                                 let msg = if n == 0 {
                                     "That already looks the way you asked — no changes needed.".to_string()
                                 } else {
-                                    format!("I prepared {n} change(s) — review and keep the ones you want on the right.")
+                                    format!("Ready — {n} change(s) to review and keep on the right.")
                                 };
                                 a.push_msg(Role::Assistant, msg);
                             }
@@ -1080,6 +1110,7 @@ impl StudioApp {
                 self.recompile_and_reload(cx);
                 self.proposal = None;
                 self.proposal_file = None;
+                self.proposal_node = None;
                 self.review_open = false;
                 self.status = Status::Compiled;
                 self.show_toast(ToastTone::Success, format!("Applied {count} change(s)."), cx);
@@ -1094,6 +1125,7 @@ impl StudioApp {
     pub fn discard_review(&mut self, cx: &mut Context<Self>) {
         self.proposal = None;
         self.proposal_file = None;
+        self.proposal_node = None;
         self.review_open = false;
         self.status = Status::Compiled;
         self.show_toast(ToastTone::Idle, "Changes discarded \u{2014} your design was left untouched.", cx);
