@@ -8,6 +8,17 @@
 use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use tracing::{debug, warn};
+
+/// A safe, char-boundary-respecting preview of `s` for logging (up to `n`
+/// chars, with an ellipsis when truncated). Never slices mid-codepoint.
+fn preview(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((idx, _)) => format!("{}\u{2026}", &s[..idx]),
+        None => s.to_string(),
+    }
+}
+
 /// Injected before any page script runs. Forwards page load, runtime errors,
 /// and canvas element clicks (with the shift/meta/ctrl modifier for additive
 /// multi-select) to [`on_message`] over wry's IPC channel.
@@ -55,13 +66,18 @@ pub enum Event {
 
 /// Parse one `{ kind, payload }` JSON message from the page.
 fn parse(message: &str) -> Option<Event> {
+    // Runs on the webview thread; log every inbound bridge message.
+    debug!(raw = %preview(message, 400), "ipc: inbound message");
     let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
-        eprintln!("wf-studio bridge (raw): {message}");
+        warn!(raw = %preview(message, 400), "ipc: non-JSON bridge message");
         return None;
     };
     let kind = value.get("kind").and_then(|k| k.as_str()).unwrap_or("");
     match kind {
-        "page-loaded" => Some(Event::PageLoaded),
+        "page-loaded" => {
+            debug!("ipc: event PageLoaded");
+            Some(Event::PageLoaded)
+        }
         "runtime-error" => {
             let message = value
                 .get("payload")
@@ -69,11 +85,12 @@ fn parse(message: &str) -> Option<Event> {
                 .and_then(|m| m.as_str())
                 .unwrap_or("runtime error")
                 .to_string();
+            debug!(message = %preview(&message, 400), "ipc: event RuntimeError");
             Some(Event::RuntimeError { message })
         }
         "console-error" => {
             let payload = value.get("payload").cloned().unwrap_or_default();
-            eprintln!("wf-studio bridge {kind}: {payload}");
+            warn!(%payload, "ipc: console error from preview");
             None
         }
         "select" => {
@@ -84,12 +101,18 @@ fn parse(message: &str) -> Option<Event> {
                 .and_then(|k| k.as_array())
                 .and_then(|arr| arr.iter().find_map(|k| k.as_str()));
             match first {
-                Some(key) => Some(Event::Select { key: key.to_string(), additive }),
-                None => Some(Event::Deselect),
+                Some(key) => {
+                    debug!(node = %key, additive, "ipc: event Select");
+                    Some(Event::Select { key: key.to_string(), additive })
+                }
+                None => {
+                    debug!("ipc: event Deselect");
+                    Some(Event::Deselect)
+                }
             }
         }
         _ => {
-            eprintln!("wf-studio bridge: {message}");
+            warn!(%kind, raw = %preview(message, 400), "ipc: unknown bridge message");
             None
         }
     }

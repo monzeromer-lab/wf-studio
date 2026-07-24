@@ -11,6 +11,7 @@
 //! the studio runs [`generate_page`] off the UI thread. Deterministically testable
 //! against [`wf_ai::ScriptedProvider`].
 
+use tracing::{debug, error, info, trace, warn};
 use wf_ai::{collect_text, ChatMessage, ChatRequest, Provider, LANGUAGE_CARD};
 use webfluent::{apply_edits, EditOp};
 
@@ -74,6 +75,13 @@ pub fn generate_page(
     user_prompt: &str,
     config: &GenConfig,
 ) -> Result<GenOutcome, GenError> {
+    info!(
+        model = %config.model,
+        prompt_len = user_prompt.len(),
+        prompt_preview = %preview(user_prompt, 400),
+        "generate_page started"
+    );
+    trace!(system_prompt = %system_prompt, user_prompt = %user_prompt, "generate_page prompts (full)");
     let mut messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(user_prompt)];
     let mut attempts = 0;
 
@@ -84,17 +92,44 @@ pub fn generate_page(
             messages: messages.clone(),
             max_tokens: config.max_tokens,
         };
-        let reply = collect_text(provider.stream_chat(request)).map_err(GenError::Provider)?;
-        let wf = extract_wf(&reply).ok_or(GenError::NoWfBlock)?;
+        let reply = match collect_text(provider.stream_chat(request)) {
+            Ok(reply) => reply,
+            Err(e) => {
+                error!(attempt = attempts, error = %e, "generate_page: provider request failed");
+                return Err(GenError::Provider(e));
+            }
+        };
+        if reply.trim().is_empty() {
+            warn!(attempt = attempts, "generate_page: empty model response");
+        }
+        debug!(attempt = attempts, len = reply.len(), preview = %preview(&reply, 400), "raw model response");
+        trace!(attempt = attempts, response = %reply, "raw model response (full)");
+
+        let wf = match extract_wf(&reply) {
+            Some(wf) => {
+                debug!(attempt = attempts, wf_len = wf.len(), "extracted .wf from reply");
+                wf
+            }
+            None => {
+                warn!(attempt = attempts, "no code block found in model reply");
+                return Err(GenError::NoWfBlock);
+            }
+        };
 
         match compile_source(&wf) {
-            Ok(_) => return Ok(GenOutcome { source: wf, attempts }),
+            Ok(site) => {
+                debug!(pages = site.pages.len(), nodes = site.node_map.len(), "compile ok");
+                info!(attempts, source_len = wf.len(), "generate_page succeeded");
+                return Ok(GenOutcome { source: wf, attempts });
+            }
             Err(diagnostic) => {
                 let last_error = diagnostic.to_string();
                 if attempts >= config.max_attempts {
+                    error!(attempts, error = %last_error, "generate_page gave up unrepaired");
                     return Err(GenError::Unrepaired { last_error, attempts });
                 }
                 // Feed the failed attempt + the exact diagnostic back for a repair.
+                warn!(attempt = attempts, error = %last_error, "validation failed → retry");
                 messages.push(ChatMessage::assistant(reply));
                 messages.push(ChatMessage::user(format!(
                     "That WebFluent did not compile:\n{last_error}\n\
@@ -125,14 +160,29 @@ pub fn edit_node(
     instruction: &str,
     config: &GenConfig,
 ) -> Result<EditOutcome, GenError> {
+    info!(
+        node = %node_id,
+        instruction_len = instruction.len(),
+        instruction_preview = %preview(instruction, 400),
+        "edit_node started"
+    );
     // The base must compile so we can resolve the selected node's current source.
-    let (site, merged, _ranges) = compile_merged([("<edit>", base_source)])
-        .map_err(|e| GenError::Provider(format!("the page must compile before editing: {e}")))?;
-    let info = site
-        .node_map
-        .info(node_id)
-        .ok_or_else(|| GenError::Provider(format!("unknown node {node_id}")))?;
+    let (site, merged, _ranges) = match compile_merged([("<edit>", base_source)]) {
+        Ok(v) => v,
+        Err(e) => {
+            error!(node = %node_id, error = %e, "edit_node: base page must compile before editing");
+            return Err(GenError::Provider(format!("the page must compile before editing: {e}")));
+        }
+    };
+    let info = match site.node_map.info(node_id) {
+        Some(info) => info,
+        None => {
+            error!(node = %node_id, "edit_node: unknown node");
+            return Err(GenError::Provider(format!("unknown node {node_id}")));
+        }
+    };
     let node_src = info.span.slice(&merged).to_string();
+    debug!(node = %node_id, node_src_len = node_src.len(), node_src_preview = %preview(&node_src, 400), "edit_node target element");
 
     let system = format!(
         "{LANGUAGE_CARD}\n\n# EDIT MODE\nYou are editing ONE existing element inside a page. \
@@ -153,8 +203,29 @@ pub fn edit_node(
             messages: messages.clone(),
             max_tokens: config.max_tokens,
         };
-        let reply = collect_text(provider.stream_chat(request)).map_err(GenError::Provider)?;
-        let replacement = extract_wf(&reply).ok_or(GenError::NoWfBlock)?;
+        let reply = match collect_text(provider.stream_chat(request)) {
+            Ok(reply) => reply,
+            Err(e) => {
+                error!(node = %node_id, attempt = attempts, error = %e, "edit_node: provider request failed");
+                return Err(GenError::Provider(e));
+            }
+        };
+        if reply.trim().is_empty() {
+            warn!(node = %node_id, attempt = attempts, "edit_node: empty model response");
+        }
+        debug!(node = %node_id, attempt = attempts, len = reply.len(), preview = %preview(&reply, 400), "raw model response");
+        trace!(node = %node_id, attempt = attempts, response = %reply, "raw model response (full)");
+
+        let replacement = match extract_wf(&reply) {
+            Some(replacement) => {
+                debug!(node = %node_id, attempt = attempts, wf_len = replacement.len(), "extracted replacement element");
+                replacement
+            }
+            None => {
+                warn!(node = %node_id, attempt = attempts, "no code block found in model reply");
+                return Err(GenError::NoWfBlock);
+            }
+        };
 
         // Splice the replacement in place of the node (a scoped span edit), then
         // validate the whole page. Both the reparse-guard and the semantic gate
@@ -164,11 +235,16 @@ pub fn edit_node(
             .and_then(|s| compile_source(&s).map(|_| s).map_err(|e| e.to_string()));
 
         match spliced {
-            Ok(source) => return Ok(EditOutcome { source, attempts }),
+            Ok(source) => {
+                info!(node = %node_id, attempts, source_len = source.len(), "edit_node succeeded");
+                return Ok(EditOutcome { source, attempts });
+            }
             Err(last_error) => {
                 if attempts >= config.max_attempts {
+                    error!(node = %node_id, attempts, error = %last_error, "edit_node gave up unrepaired");
                     return Err(GenError::Unrepaired { last_error, attempts });
                 }
+                warn!(node = %node_id, attempt = attempts, error = %last_error, "edit replacement rejected → retry");
                 messages.push(ChatMessage::assistant(reply));
                 messages.push(ChatMessage::user(format!(
                     "That replacement did not work: {last_error}\n\
@@ -228,6 +304,12 @@ pub fn self_heal(
          change any visible text, layout, styling, modifiers, or components. Change only logic: \
          state, derived, actions, event handlers, and expressions."
     );
+    info!(
+        error_len = runtime_error.len(),
+        error_preview = %preview(runtime_error, 400),
+        "self_heal started"
+    );
+    trace!(runtime_error = %runtime_error, base = %base_source, "self_heal input (full)");
     let mut messages = vec![
         ChatMessage::system(system),
         ChatMessage::user(format!("The page:\n```wf\n{base_source}\n```\n\nRuntime error:\n{runtime_error}")),
@@ -241,15 +323,41 @@ pub fn self_heal(
             messages: messages.clone(),
             max_tokens: config.max_tokens,
         };
-        let reply = collect_text(provider.stream_chat(request)).map_err(HealError::Provider)?;
-        let fix = extract_wf(&reply).ok_or(HealError::NoWfBlock)?;
+        let reply = match collect_text(provider.stream_chat(request)) {
+            Ok(reply) => reply,
+            Err(e) => {
+                error!(attempt = attempts, error = %e, "self_heal: provider request failed");
+                return Err(HealError::Provider(e));
+            }
+        };
+        if reply.trim().is_empty() {
+            warn!(attempt = attempts, "self_heal: empty model response");
+        }
+        debug!(attempt = attempts, len = reply.len(), preview = %preview(&reply, 400), "raw model response");
+        trace!(attempt = attempts, response = %reply, "raw model response (full)");
+
+        let fix = match extract_wf(&reply) {
+            Some(fix) => {
+                debug!(attempt = attempts, wf_len = fix.len(), "extracted candidate fix");
+                fix
+            }
+            None => {
+                warn!(attempt = attempts, "no code block found in model reply");
+                return Err(HealError::NoWfBlock);
+            }
+        };
 
         match validate_fix(base_source, &fix) {
-            Ok(()) => return Ok(HealOutcome { source: fix, attempts }),
+            Ok(()) => {
+                info!(attempts, source_len = fix.len(), "self_heal succeeded");
+                return Ok(HealOutcome { source: fix, attempts });
+            }
             Err(reason) => {
                 if attempts >= config.max_attempts {
+                    error!(attempts, reason = %reason, "self_heal gave up");
                     return Err(HealError::GaveUp { last_reason: reason, attempts });
                 }
+                warn!(round = attempts, reason = %reason, "self-heal round rejected → retry");
                 messages.push(ChatMessage::assistant(reply));
                 messages.push(ChatMessage::user(format!(
                     "That didn't work: {reason}. Return a corrected complete page that fixes ONLY \
@@ -264,11 +372,25 @@ pub fn self_heal(
 /// modifier, or style block (position-independent, so a logic fix that shifts ids
 /// is fine). Text and logic may change; layout/styling may not.
 fn validate_fix(base: &str, fix: &str) -> Result<(), String> {
-    compile_source(fix).map_err(|e| format!("it didn't compile: {e}"))?;
-    if !crate::diff::design_preserved(base, fix).map_err(|e| format!("couldn't compare it: {e}"))? {
+    if let Err(e) = compile_source(fix) {
+        warn!(error = %e, "self_heal fix did not compile");
+        return Err(format!("it didn't compile: {e}"));
+    }
+    let preserved = crate::diff::design_preserved(base, fix).map_err(|e| format!("couldn't compare it: {e}"))?;
+    debug!(design_preserved = preserved, "self_heal design-freeze check");
+    if !preserved {
         return Err("it changed the visible design (layout, styling, or components)".to_string());
     }
     Ok(())
+}
+
+/// First `n` chars of `s`, never splitting a UTF-8 boundary, with an ellipsis when
+/// truncated. Used only for logging — must never panic on arbitrary model output.
+fn preview(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+        None => s.to_string(),
+    }
 }
 
 /// Extract `.wf` source from a model reply: the first fenced code block (```wf

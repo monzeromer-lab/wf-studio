@@ -37,6 +37,12 @@ async-channel = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 tokio = { version = "1", features = ["rt", "net", "time"] }
 futures-util = "0.3"
+
+# Structured, filterable debug logging across every crate (set RUST_LOG=wf_ai=trace
+# etc.; the studio installs the subscriber in main). Defaults to on so the terminal
+# shows the AI/edit/preview pipeline without extra setup.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # BYO-key storage in the OS credential store. linux-keyutils is headless-safe (no
 # D-Bus); a desktop build can switch to the secret-service backend for cross-reboot
 # persistence — the KeyStore trait makes that a one-line swap.

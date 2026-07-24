@@ -28,6 +28,8 @@ copyright = "Copyright © 2026 Monzer Omer. Licensed GPL-3.0-or-later."
 # icon = ["assets/icon.png"]
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
 webfluent.workspace = true
 wf-core.workspace = true
 wf-ai.workspace = true

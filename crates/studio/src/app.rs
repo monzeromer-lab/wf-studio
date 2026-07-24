@@ -19,8 +19,11 @@ use webfluent::CompiledSite;
 use anyhow::Context as _;
 use gpui::{Context, Entity, SharedString, Task, Window, prelude::*};
 use gpui_component::input::{InputEvent, InputState};
+use gpui_component::resizable::ResizableState;
 use gpui_component::webview::WebView;
 use wry::{WebViewBuilder, http::Request};
+
+use tracing::{debug, error, info, trace, warn};
 
 use crate::state::*;
 use crate::{ipc, site, ui};
@@ -117,6 +120,10 @@ pub struct StudioApp {
     toast_task: Option<Task<()>>,
     /// The embedded website-preview webview (`None` if the embed failed).
     pub preview: Option<Entity<WebView>>,
+    /// Drag-resize state for the workspace columns (chat | canvas | sidebar). A
+    /// single shared entity keeps each side's dragged width stable across a
+    /// collapse-to-tab, because the panel count never changes.
+    pub resize_state: Entity<ResizableState>,
     /// The live WebFluent project: `.wf` sources + the latest compile.
     project: wf_core::WfProject,
     /// Source-snapshot history for undo/redo/restore (FR-14).
@@ -129,6 +136,9 @@ pub struct StudioApp {
     proposal_output: Arc<RwLock<CompiledSite>>,
     pipeline_task: Option<Task<()>>,
     next_id: u64,
+    /// Bumped on every preview reload so the url changes — defeats WebKit's
+    /// custom-scheme cache and forces a fresh navigation (see recompile_and_reload).
+    reload_seq: u64,
 }
 
 impl StudioApp {
@@ -162,11 +172,11 @@ impl StudioApp {
         // to the shared handle the `wf://` serve closure reads.
         let project = wf_core::WfProject::seed();
         match project.error() {
-            Some(err) => eprintln!("wf-studio: seed project failed to compile: {err}"),
-            None => eprintln!(
-                "wf-studio: seed project compiled ({} page(s), {} nodes)",
-                project.compiled().pages.len(),
-                project.compiled().node_map.len(),
+            Some(err) => error!(%err, "seed project failed to compile"),
+            None => info!(
+                pages = project.compiled().pages.len(),
+                nodes = project.compiled().node_map.len(),
+                "seed project compiled"
             ),
         }
         let mut history = wf_core::History::new();
@@ -182,11 +192,14 @@ impl StudioApp {
                 entity.update(cx, |w, _| w.hide());
                 Some(entity)
             }
-            Err(error) => {
-                eprintln!("wf-studio: could not embed the preview webview: {error:#}");
+            Err(err) => {
+                error!(error = %format!("{err:#}"), "could not embed the preview webview");
                 None
             }
         };
+
+        // Persistent drag-resize state for the workspace columns.
+        let resize_state = cx.new(|_| ResizableState::default());
 
         // Drive webkit's gtk widget from GPUI's loop (no gtk main loop of its
         // own), and apply any canvas-selection clicks the preview posted over
@@ -290,12 +303,14 @@ impl StudioApp {
             toast_note: None,
             toast_task: None,
             preview,
+            resize_state,
             project,
             history,
             output,
             proposal_output,
             pipeline_task: None,
             next_id: 0,
+            reload_seq: 0,
         }
     }
 
@@ -343,7 +358,7 @@ impl StudioApp {
             return;
         }
         if let Err(e) = self.keys.set(self.provider_kind(), key) {
-            eprintln!("wf-studio: could not save API key to the keychain: {e}");
+            warn!(error = %e, "could not save API key to the keychain");
         }
     }
 
@@ -361,6 +376,7 @@ impl StudioApp {
         self.save_current_key(cx);
         let kind = self.provider_kind();
         let model = self.current_model();
+        info!(provider = ?kind, model = %model, "test_connection: starting");
         let provider = wf_ai::provider_for(kind, key);
         self.conn_test = ConnTest::Testing;
         cx.notify();
@@ -372,11 +388,22 @@ impl StudioApp {
                     let req = wf_ai::ChatRequest {
                         model,
                         messages: vec![wf_ai::ChatMessage::user("Reply with the single word: OK")],
-                        max_tokens: 16,
+                        // Generous budget: a reasoning-by-default model (Kimi K3, o3,
+                        // Fable 5, Gemini thinkers) must have room to think AND still
+                        // emit the word, or the test would false-fail on a valid key.
+                        max_tokens: 1024,
                     };
                     wf_ai::collect_text(provider.stream_chat(req))
                 })
                 .await;
+            match &result {
+                Ok(text) if !text.trim().is_empty() => {
+                    info!(reply = %log_preview(text.trim(), 400), "test_connection: ok");
+                    trace!(reply_full = %text, "test_connection: full reply");
+                }
+                Ok(_) => warn!("test_connection: provider returned an empty response"),
+                Err(e) => error!(error = %friendly(e), "test_connection: request failed"),
+            }
             let _ = this.update(cx, |a, cx| {
                 a.conn_test = match result {
                     Ok(text) if !text.trim().is_empty() => ConnTest::Ok,
@@ -396,15 +423,30 @@ impl StudioApp {
     /// Recompile the project, publish the new output to the shared serve handle,
     /// and reload the preview so it shows the result. The AI / inspector edit
     /// flows drive this in M3; for now it is the manual recompile hook.
-    #[allow(dead_code)] // wired to edit triggers in M3
     pub fn recompile_and_reload(&mut self, cx: &mut Context<Self>) {
         self.project.recompile();
+        // A failed recompile keeps the last-good CompiledSite, so reloading would just
+        // re-serve identical bytes with no feedback — surface it instead.
+        if let Some(err) = self.project.error() {
+            error!(%err, "recompile failed, preview left unchanged");
+            self.show_toast(ToastTone::Idle, "That change didn't compile \u{2014} preview left as-is.", cx);
+            return;
+        }
+        debug!(nodes = self.project.compiled().node_map.len(), "recompile ok");
         if let Ok(mut out) = self.output.write() {
             *out = self.project.compiled().clone();
         }
+        // Reload a SELF-CONTAINED page (`/base` inlines css+js, so there are no
+        // cacheable subresources) at a monotonically-changing url. WebKitGTK ignores
+        // `no-store` for custom schemes and would otherwise serve a cached
+        // styles.css/app.js — so a same-url reload shows stale output; the changing
+        // `?v=` both defeats that cache and forces a genuine fresh navigation.
+        self.reload_seq = self.reload_seq.wrapping_add(1);
         if let Some(preview) = &self.preview {
+            let url = format!("{ORIGIN}/base?v={}", self.reload_seq);
+            debug!(seq = self.reload_seq, %url, "reloading preview");
             preview.update(cx, |w, _| {
-                let _ = w.raw().load_url(&format!("{ORIGIN}/{}", site::PREVIEW_ENTRY));
+                let _ = w.raw().load_url(&url);
             });
         }
     }
@@ -436,11 +478,9 @@ impl StudioApp {
         if let Ok(mut out) = self.proposal_output.write() {
             *out = CompiledSite::default();
         }
-        if let Some(preview) = &self.preview {
-            preview.update(cx, |w, _| {
-                let _ = w.raw().load_url(&format!("{ORIGIN}/{}", site::PREVIEW_ENTRY));
-            });
-        }
+        // Return to the live document via the same self-contained + cache-busted
+        // reload (a bare index.html load_url would hit the stale-subresource cache).
+        self.recompile_and_reload(cx);
     }
 
     /// A preview element was clicked (its `data-wf-node` id). Resolve it to code,
@@ -457,13 +497,15 @@ impl StudioApp {
             self.sel_nodes = vec![id.clone()];
         }
         match self.project.resolve_node(&id) {
-            Some(r) => eprintln!(
-                "wf-studio: selected {id} in {} [{}] -> {}",
-                r.info.component,
-                r.file,
-                r.source_slice.lines().next().unwrap_or("")
+            Some(r) => debug!(
+                node = %id,
+                additive,
+                component = %r.info.component,
+                file = %r.file,
+                source = %r.source_slice.lines().next().unwrap_or(""),
+                "select_node"
             ),
-            None => eprintln!("wf-studio: selected {id} (not in node map)"),
+            None => debug!(node = %id, additive, "select_node (not in node map)"),
         }
         // Mirror into the mock `selection` so the reused inspector panel renders
         // for the real node (its controls now emit EditOps — see `set_*`).
@@ -477,6 +519,7 @@ impl StudioApp {
         if self.sel_nodes.is_empty() {
             return;
         }
+        debug!(cleared = self.sel_nodes.len(), "deselect_node");
         self.sel_nodes.clear();
         self.selection.clear();
         self.highlight_nodes(cx);
@@ -595,6 +638,7 @@ impl StudioApp {
         self.provider = id;
         self.conn_test = ConnTest::Untested;
         self.chat_model = self.provider_kind().default_model().into();
+        debug!(provider = ?self.provider_kind(), model = %self.chat_model, "pick_provider");
         let loaded = self.keys.get(self.provider_kind()).unwrap_or_default();
         self.api_key.update(cx, |s, cx| s.set_value(loaded, window, cx));
         cx.notify();
@@ -873,6 +917,8 @@ impl StudioApp {
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
 
+        warn!(provider = ?kind, model = %self.current_model(), error = %log_preview(&message, 400), "on_runtime_error: attempting self-heal");
+        trace!(error_full = %message, "on_runtime_error: full error");
         self.busy = true;
         self.status = Status::Compiling;
         self.push_msg(Role::Assistant, "Caught a runtime error in the preview — trying to fix it without touching your design\u{2026}");
@@ -887,6 +933,9 @@ impl StudioApp {
                 a.busy = false;
                 match result {
                     Ok(outcome) => {
+                        info!(attempts = outcome.attempts, "self_heal: fixed runtime error");
+                        debug!(source = %log_preview(&outcome.source, 400), "self_heal: healed source");
+                        trace!(source_full = %outcome.source, "self_heal: full healed source");
                         a.project.set_source(&file, outcome.source);
                         a.recompile_and_reload(cx);
                         a.history.checkpoint("Self-healed a runtime error", a.project.snapshot());
@@ -896,6 +945,7 @@ impl StudioApp {
                     }
                     Err(e) => {
                         // Non-blocking: flag it and keep the app usable (FR-22).
+                        error!(error = %friendly(&e), "self_heal: could not fix runtime error safely");
                         a.status = Status::Error;
                         a.push_msg(Role::Assistant, format!("A runtime error needs your attention — I couldn't fix it safely without changing the design: {}", friendly(&e)));
                         a.show_toast(ToastTone::Idle, "A runtime error needs attention \u{2014} see the chat.", cx);
@@ -977,6 +1027,12 @@ impl StudioApp {
         let text = self.prompt_text(cx);
         // A pending proposal → refine it (FR-8); a selected element → a scoped edit;
         // otherwise generate.
+        debug!(
+            len = text.len(),
+            has_proposal = self.proposal.is_some(),
+            selected = self.sel_nodes.len(),
+            "send_prompt: routing"
+        );
         if self.proposal.is_some() {
             self.reprompt(text, window, cx);
         } else if self.generated && !self.sel_nodes.is_empty() {
@@ -1157,6 +1213,8 @@ impl StudioApp {
         config.max_tokens = 8192;
         let provider = wf_ai::provider_for(kind, key);
 
+        info!(provider = ?kind, model = %self.current_model(), prompt_len = prompt.len(), prompt = %log_preview(&prompt, 400), "build: generating page");
+        trace!(prompt_full = %prompt, "build: full prompt");
         self.busy = true;
         self.status = Status::Compiling;
         cx.notify();
@@ -1170,12 +1228,16 @@ impl StudioApp {
                 a.busy = false;
                 match result {
                     Ok(outcome) => {
+                        info!(attempts = outcome.attempts, source_len = outcome.source.len(), "build: model returned a page");
+                        debug!(source = %log_preview(&outcome.source, 400), "build: generated source");
+                        trace!(source_full = %outcome.source, "build: full generated source");
                         a.project.set_source("src/pages/Home.wf", outcome.source);
                         a.recompile_and_reload(cx);
                         // recompile validates again; it should agree with generation.
                         let compile_err = a.project.error().map(|e| e.to_string());
                         match compile_err {
                             Some(err) => {
+                                error!(%err, "build: generated page failed to compile");
                                 a.status = Status::Error;
                                 a.push_msg(Role::Assistant, format!("The page was generated but the preview failed to compile: {err}"));
                             }
@@ -1183,6 +1245,7 @@ impl StudioApp {
                                 a.generated = true;
                                 a.status = Status::Compiled;
                                 let healed = outcome.attempts.saturating_sub(1);
+                                info!(healed, "build: page compiled and live");
                                 let note = if healed > 0 {
                                     format!("Done \u{2014} your page is live (self-healed {healed} compile issue(s) along the way). Click any part of the preview to tweak it.")
                                 } else {
@@ -1195,6 +1258,7 @@ impl StudioApp {
                         }
                     }
                     Err(e) => {
+                        error!(error = %friendly(&e), "build: generation failed");
                         a.status = Status::Error;
                         a.push_msg(Role::Assistant, format!("I couldn't build a working page: {}", friendly(&e)));
                         a.show_toast(ToastTone::Idle, "Generation failed \u{2014} see the chat for details.", cx);
@@ -1255,6 +1319,8 @@ impl StudioApp {
         let provider = wf_ai::provider_for(kind, key);
         let node_for_edit = node.clone();
 
+        info!(provider = ?kind, model = %self.current_model(), node = %node, file = %file, instruction = %log_preview(&instruction, 400), "run_edit: editing node");
+        trace!(instruction_full = %instruction, "run_edit: full instruction");
         self.push_msg(Role::User, instruction.clone());
         self.set_prompt("", window, cx);
         self.busy = true;
@@ -1270,12 +1336,16 @@ impl StudioApp {
                 a.busy = false;
                 match result {
                     Ok(outcome) => {
+                        info!(attempts = outcome.attempts, source_len = outcome.source.len(), "run_edit: model returned edited source");
+                        debug!(source = %log_preview(&outcome.source, 400), "run_edit: edited source");
+                        trace!(source_full = %outcome.source, "run_edit: full edited source");
                         // Diff against the live file source (unchanged until Apply),
                         // so re-prompts still show the full change from the document.
                         let diff_base = a.project.file_source(&file).unwrap_or_default().to_string();
                         match wf_core::Proposal::new(diff_base, outcome.source) {
                             Ok(proposal) => {
                                 let n = proposal.len();
+                                info!(changes = n, "run_edit: proposal ready for review");
                                 a.proposal = Some(proposal);
                                 a.proposal_file = Some(file);
                                 a.proposal_node = Some(node);
@@ -1293,12 +1363,14 @@ impl StudioApp {
                                 a.push_msg(Role::Assistant, msg);
                             }
                             Err(e) => {
+                                error!(error = %friendly(&e), "run_edit: could not diff edit into a proposal");
                                 a.status = Status::Error;
                                 a.push_msg(Role::Assistant, format!("I made the edit but couldn't diff it: {}", friendly(&e)));
                             }
                         }
                     }
                     Err(e) => {
+                        error!(error = %friendly(&e), "run_edit: edit failed");
                         a.status = Status::Error;
                         a.push_msg(Role::Assistant, format!("I couldn't make that edit: {}", friendly(&e)));
                     }
@@ -1358,6 +1430,7 @@ impl StudioApp {
         };
         match applied {
             Ok((source, count)) => {
+                info!(kept = count, file = %file, "apply_review: applying kept change(s)");
                 self.project.set_source(&file, source);
                 // Drop the proposal site, then reload the live document (now with
                 // the accepted changes) — leaving the diff shell behind.
@@ -1374,6 +1447,7 @@ impl StudioApp {
                 self.show_toast(ToastTone::Success, format!("Applied {count} change(s)."), cx);
             }
             Err(e) => {
+                error!(error = %friendly(&e), "apply_review: kept changes conflicted");
                 self.push_msg(Role::Assistant, format!("Some of those changes conflicted and couldn't be applied together: {}. Try keeping fewer, or apply all.", friendly(&e)));
                 self.show_toast(ToastTone::Idle, "Couldn't apply that combination \u{2014} see the chat.", cx);
             }
@@ -1381,6 +1455,7 @@ impl StudioApp {
         cx.notify();
     }
     pub fn discard_review(&mut self, cx: &mut Context<Self>) {
+        info!(kept = self.kept_count(), "discard_review: discarding proposal");
         self.proposal = None;
         self.proposal_file = None;
         self.proposal_node = None;
@@ -1432,11 +1507,23 @@ impl StudioApp {
     // ── inspector (live edits) ────────────────────────────────────────────────
     /// Apply structured edits to the currently-selected node, then recompile the
     /// project and reload the preview — the real "edit by selecting" spine.
+    /// Apply structured edits to the current selection (the inspector spine).
     fn apply_ops(&mut self, ops: Vec<webfluent::EditOp>, cx: &mut Context<Self>) {
-        let Some(id) = self.sel_nodes.first().cloned() else { return };
-        match self.project.edit_node(id.as_ref(), &ops) {
-            Ok(()) => self.recompile_and_reload(cx),
-            Err(e) => eprintln!("wf-studio: edit failed: {e}"),
+        let Some(id) = self.sel_nodes.first().cloned() else {
+            warn!("apply_ops with no selected node — nothing to edit");
+            return;
+        };
+        self.apply_ops_to(id.as_ref(), ops, cx);
+    }
+
+    /// Apply structured edits to a specific node id, recompiling + reloading on success.
+    fn apply_ops_to(&mut self, target: &str, ops: Vec<webfluent::EditOp>, cx: &mut Context<Self>) {
+        match self.project.edit_node(target, &ops) {
+            Ok(()) => {
+                info!(node = %target, edits = ops.len(), "apply_ops: applied edit(s), reloading preview");
+                self.recompile_and_reload(cx);
+            }
+            Err(e) => error!(node = %target, error = %e, "apply_ops: edit failed"),
         }
     }
 
@@ -1447,22 +1534,39 @@ impl StudioApp {
         self.apply_ops(vec![op], cx);
     }
 
+    /// Record the value just set into the display `edits` for the current selection.
+    /// The real edit lands in the model via `edit_style`/`edit_node`; this keeps the
+    /// inspector's shown value in sync so the size stepper increments from the current
+    /// value instead of always recomputing from the default (which froze it).
+    fn record_edit(&mut self, f: impl FnOnce(&mut ElEdit)) {
+        if let Some(key) = self.selection.first().cloned() {
+            f(self.edits.entry(key).or_default());
+        }
+    }
     pub fn set_color(&mut self, v: SharedString, cx: &mut Context<Self>) {
+        let disp = v.clone();
+        self.record_edit(move |e| e.color = Some(disp));
         self.edit_style("color", format!("\"{v}\""), cx);
     }
     pub fn set_size(&mut self, v: f32, cx: &mut Context<Self>) {
+        self.record_edit(move |e| e.size = Some(v));
         self.edit_style("font-size", format!("\"{v}px\""), cx);
     }
     pub fn set_weight(&mut self, v: u16, cx: &mut Context<Self>) {
+        self.record_edit(move |e| e.weight = Some(v));
         self.edit_style("font-weight", v.to_string(), cx);
     }
     pub fn set_align(&mut self, v: Align, cx: &mut Context<Self>) {
+        self.record_edit(move |e| e.align = Some(v));
         self.edit_style("text-align", format!("\"{}\"", v.value()), cx);
     }
     pub fn set_bg(&mut self, v: SharedString, cx: &mut Context<Self>) {
+        let disp = v.clone();
+        self.record_edit(move |e| e.bg = Some(disp));
         self.edit_style("background", format!("\"{v}\""), cx);
     }
     pub fn set_radius(&mut self, v: f32, cx: &mut Context<Self>) {
+        self.record_edit(move |e| e.radius = Some(v));
         self.edit_style("border-radius", format!("\"{v}px\""), cx);
     }
     pub fn reset_style(&mut self, cx: &mut Context<Self>) {
@@ -1478,10 +1582,17 @@ impl StudioApp {
 
     // ── outline / blocks ──────────────────────────────────────────────────────
     pub fn add_block(&mut self, kind: BlockType, cx: &mut Context<Self>) {
-        // Append the block as a child of the selected element (a real AppendChild
-        // edit → recompile → reload).
-        let Some(target) = self.sel_nodes.first().cloned() else {
-            self.show_toast(ToastTone::Idle, "Select an element first, then add a block into it.", cx);
+        // Append into the selected element, or — when nothing is selected (the
+        // "Add to page" buttons live in the outline view) — into the page root so
+        // the block still lands somewhere. A real AppendChild edit → recompile → reload.
+        let target = self
+            .sel_nodes
+            .first()
+            .cloned()
+            .map(|s| s.to_string())
+            .or_else(|| self.project.outline().first().map(|n| n.id.clone()));
+        let Some(target) = target else {
+            self.show_toast(ToastTone::Idle, "Add a page first, then drop blocks into it.", cx);
             return;
         };
         let (wf, label) = match kind {
@@ -1489,10 +1600,7 @@ impl StudioApp {
             BlockType::Image => ("Image(src: \"/placeholder.png\")", "image"),
             BlockType::Button => ("Button(\"Button\", primary)", "button"),
         };
-        self.apply_ops(
-            vec![webfluent::EditOp::AppendChild { node: target.to_string(), wf: wf.to_string() }],
-            cx,
-        );
+        self.apply_ops_to(&target, vec![webfluent::EditOp::AppendChild { node: target.clone(), wf: wf.to_string() }], cx);
         self.show_toast(ToastTone::Success, format!("Added a {label}."), cx);
         cx.notify();
     }
@@ -1515,6 +1623,7 @@ impl StudioApp {
         cx.notify();
     }
     pub fn set_chat_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        debug!(model = %id, provider = ?self.provider_kind(), "set_chat_model");
         self.chat_model = id.to_string().into();
         cx.notify();
     }
@@ -1814,7 +1923,7 @@ fn build_preview(
         let webview = builder
             .build_as_child(&X11Parent(xid))
             .context("embedding the preview webview into the gpui X11 window")?;
-        eprintln!("wf-studio: preview webview embedded into window 0x{xid:x}");
+        info!(window = %format!("0x{xid:x}"), "preview webview embedded");
         Ok(webview)
     }
     #[cfg(not(target_os = "linux"))]
@@ -1881,6 +1990,16 @@ fn map_chip_kind(k: wf_core::ChipKind) -> ChipKind {
         wf_core::ChipKind::Style => ChipKind::Style,
         wf_core::ChipKind::Structure => ChipKind::Structure,
         wf_core::ChipKind::Behavior => ChipKind::Behavior,
+    }
+}
+
+/// A safe, char-boundary-respecting preview of `s` for logging: up to `n`
+/// characters, with an ellipsis when truncated. Never slices mid-codepoint, so
+/// it can log arbitrary prompt/model text without panicking.
+fn log_preview(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((idx, _)) => format!("{}\u{2026}", &s[..idx]),
+        None => s.to_string(),
     }
 }
 

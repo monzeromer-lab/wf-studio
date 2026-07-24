@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+tracing.workspace = true
 wf-core.workspace = true
 anyhow.workspace = true
 async-channel.workspace = true

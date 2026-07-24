@@ -13,7 +13,8 @@ mod title_bar;
 mod toolbar;
 mod widgets;
 
-use gpui::{AnyElement, ClickEvent, Context, Window, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, Pixels, Window, div, prelude::*, px};
+use gpui_component::resizable::{h_resizable, resizable_panel};
 use gpui_component::{h_flex, v_flex};
 
 use crate::app::StudioApp;
@@ -98,16 +99,39 @@ fn toast_view(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement 
 fn studio_body(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>) -> AnyElement {
     let panel_hidden = app.right_mode() == RightMode::Outline && !app.panel_open;
 
+    // Constant three-panel group [chat | canvas | sidebar]: gpui-component draws a
+    // resize handle on the left edge of every panel after the first, so the two
+    // handles land exactly on the chat|canvas and canvas|sidebar boundaries. A
+    // collapsed side stays in the group pinned to 40px (size_range 40..40) so its
+    // handle is inert and the panel count never changes — which lets ResizableState
+    // remember each side's dragged width across a collapse/expand.
     let left = if app.chat_open {
-        chat::render(app, window, cx).into_any_element()
+        resizable_panel()
+            .size(px(360.0))
+            .size_range(px(300.0)..px(560.0))
+            .child(chat::render(app, window, cx))
     } else {
-        reopen_tab("chat-tab", "sparkle", true, cx.listener(|a, _, _, cx| a.toggle_chat(cx))).into_any_element()
+        resizable_panel()
+            .size(px(40.0))
+            .size_range(px(40.0)..px(40.0))
+            .child(reopen_tab("chat-tab", "sparkle", true, cx.listener(|a, _, _, cx| a.toggle_chat(cx))))
     };
     let right = if panel_hidden {
-        reopen_tab("panel-tab", "layers", false, cx.listener(|a, _, _, cx| a.toggle_panel(cx))).into_any_element()
+        resizable_panel()
+            .size(px(40.0))
+            .size_range(px(40.0)..px(40.0))
+            .child(reopen_tab("panel-tab", "layers", false, cx.listener(|a, _, _, cx| a.toggle_panel(cx))))
     } else {
-        sidebar::render(app, window, cx).into_any_element()
+        resizable_panel()
+            .size(px(312.0))
+            .size_range(px(280.0)..px(480.0))
+            .child(sidebar::render(app, window, cx))
     };
+    // The canvas has no fixed size, so it flex-fills between the two sides; the
+    // embedded webview follows this panel's bounds and reflows as you drag.
+    let center = resizable_panel()
+        .size_range(px(360.0)..Pixels::MAX)
+        .child(div().size_full().min_w_0().child(canvas::render(app, window, cx)));
 
     v_flex()
         .relative()
@@ -115,13 +139,15 @@ fn studio_body(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>
         .min_h_0()
         .child(toolbar::render(app, window, cx))
         .child(
-            h_flex()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .child(left)
-                .child(div().flex_1().min_w_0().h_full().child(canvas::render(app, window, cx)))
-                .child(right),
+            // h_resizable renders itself size_full, so it needs a flex_1 host to
+            // occupy the row below the toolbar.
+            div().flex_1().min_h_0().w_full().child(
+                h_resizable("studio-cols")
+                    .with_state(&app.resize_state)
+                    .child(left)
+                    .child(center)
+                    .child(right),
+            ),
         )
         .into_any_element()
 }

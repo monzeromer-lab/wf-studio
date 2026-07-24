@@ -14,7 +14,8 @@ const COLOR_SWATCHES: &[(&str, u32)] = &[("#F4F6FB", 0xF4F6FB), ("#93C0F2", 0x93
 const BG_SWATCHES: &[(&str, Option<u32>)] = &[("transparent", None), ("#14161C", Some(0x14161C)), ("#1B1E25", Some(0x1B1E25)), ("#93C0F2", Some(0x93C0F2)), ("#8A6DF2", Some(0x8A6DF2))];
 
 pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
-    let panel = v_flex().flex_none().h_full().w(px(312.0)).min_h_0().bg(theme::bg_panel()).border_l_1().border_color(theme::line());
+    // Width is owned by the enclosing resizable panel (see studio_body).
+    let panel = v_flex().flex_1().min_w_0().h_full().min_h_0().bg(theme::bg_panel()).border_l_1().border_color(theme::line());
     match app.right_mode() {
         RightMode::Review => panel.child(review(app, cx)),
         RightMode::Inspector => panel.child(inspector(app, cx)),

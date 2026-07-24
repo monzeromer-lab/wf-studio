@@ -6,6 +6,8 @@
 //! pattern. Deltas are forwarded over an unbounded channel; the caller's
 //! executor never blocks on ours.
 
+use tracing::{debug, error, info};
+
 use crate::{ChatDelta, sse::SseDecoder};
 
 /// Interpret one SSE `data:` payload into zero or more deltas. Stateless per
@@ -17,6 +19,8 @@ pub(crate) fn run_stream(
     interpret: Interpret,
 ) -> async_channel::Receiver<ChatDelta> {
     let (tx, rx) = async_channel::unbounded::<ChatDelta>();
+
+    info!("dispatching streaming chat request");
 
     let spawned = std::thread::Builder::new()
         .name("wf-ai-stream".into())
@@ -55,6 +59,7 @@ async fn drive(
     let resp = match request.send().await {
         Ok(r) => r,
         Err(e) => {
+            error!(error = %e, "request dispatch failed");
             let _ = tx
                 .send(ChatDelta::Error(format!("request failed: {e}")))
                 .await;
@@ -62,10 +67,13 @@ async fn drive(
         }
     };
 
+    debug!(status = %resp.status(), "received HTTP response");
+
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let detail = body.trim();
+        error!(status = %status, body = %crate::preview(detail, 400), "non-success HTTP status");
         let _ = tx
             .send(ChatDelta::Error(format!("HTTP {status}: {detail}")))
             .await;
@@ -75,11 +83,13 @@ async fn drive(
     let mut stream = Box::pin(resp.bytes_stream());
     let mut decoder = SseDecoder::default();
     let mut done = false;
+    let mut emitted = 0usize;
 
     'outer: while let Some(chunk) = stream.next().await {
         let bytes = match chunk {
             Ok(b) => b,
             Err(e) => {
+                error!(error = %e, "byte-stream error");
                 let _ = tx
                     .send(ChatDelta::Error(format!("stream error: {e}")))
                     .await;
@@ -95,6 +105,7 @@ async fn drive(
             if tx.send(delta).await.is_err() {
                 return; // receiver dropped — stop pulling from the network
             }
+            emitted += 1;
             if terminal {
                 done = true;
                 break 'outer;
@@ -107,4 +118,6 @@ async fn drive(
     if !done {
         let _ = tx.send(ChatDelta::Done).await;
     }
+
+    debug!(deltas = emitted, terminal = done, "stream complete");
 }

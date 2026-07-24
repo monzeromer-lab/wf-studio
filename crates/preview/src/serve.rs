@@ -110,9 +110,14 @@ pub fn resolve(site: &CompiledSite, path: &str) -> Option<(&'static str, Vec<u8>
 /// Build a `wf://` response from a resolved resource (200) or a 404.
 pub fn respond(found: Option<(&'static str, Vec<u8>)>) -> Response<Cow<'static, [u8]>> {
     match found {
+        // `no-store` is essential: after an inspector edit or AI change we recompile
+        // and reload the SAME url, so WebKit must re-fetch index.html / styles.css /
+        // app.js from the protocol handler rather than serve a cached (pre-edit) copy —
+        // otherwise style/structure edits silently don't appear in the preview.
         Some((mime, bytes)) => Response::builder()
             .status(200)
             .header(CONTENT_TYPE, mime)
+            .header("Cache-Control", "no-store, must-revalidate")
             .body(Cow::Owned(bytes))
             .unwrap(),
         None => Response::builder()

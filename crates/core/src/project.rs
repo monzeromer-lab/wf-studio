@@ -13,6 +13,7 @@
 //! its source file.
 
 use std::collections::BTreeMap;
+use tracing::{debug, error, warn};
 use webfluent::{compile_studio, apply_edits, CompiledSite, EditOp, NodeInfo};
 use webfluent::lexer::Lexer;
 use webfluent::parser::Parser;
@@ -54,12 +55,20 @@ pub fn compile_merged<'a>(
     sources: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> anyhow::Result<(CompiledSite, String, Vec<FileRange>)> {
     let (merged, ranges) = merge_sources(sources);
-    let tokens = Lexer::new(&merged, "<studio>")
-        .tokenize()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let program = Parser::new(tokens, "<studio>")
-        .parse()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let tokens = match Lexer::new(&merged, "<studio>").tokenize() {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            error!(error = %e, "compile_merged: lex error");
+            return Err(anyhow::anyhow!("{e}"));
+        }
+    };
+    let program = match Parser::new(tokens, "<studio>").parse() {
+        Ok(program) => program,
+        Err(e) => {
+            error!(error = %e, "compile_merged: parse error");
+            return Err(anyhow::anyhow!("{e}"));
+        }
+    };
     // Semantic gate (M4.E): the codegen is permissive and never fails, so a program
     // that parses can still reference an undeclared component, aim a Route at a
     // missing page, or declare a page twice — all of which only break at runtime.
@@ -67,9 +76,11 @@ pub fn compile_merged<'a>(
     // broken preview. (Line/column are merged-source coordinates; mapping back to
     // the source file is a later milestone.)
     if let Some(first) = webfluent::validate_semantics(&program, "<studio>").into_iter().next() {
+        warn!(error = %first, "compile_merged: semantic validation failed");
         return Err(anyhow::anyhow!("{first}"));
     }
     let site = compile_studio(&program, &preview_config(), &Default::default());
+    debug!(pages = site.pages.len(), nodes = site.node_map.len(), "compile_merged ok");
     Ok((site, merged, ranges))
 }
 
@@ -201,10 +212,17 @@ impl WfProject {
     /// Resolve a node id (from a `data-wf-node` click) to its info, source file,
     /// and exact source text. `None` if the id is unknown.
     pub fn resolve_node(&self, node_id: &str) -> Option<ResolvedNode<'_>> {
-        let info = self.compiled.node_map.info(node_id)?;
+        let Some(info) = self.compiled.node_map.info(node_id) else {
+            debug!(node = %node_id, "resolve_node miss (unknown node)");
+            return None;
+        };
         let start = info.span.start as usize;
-        let range = self.ranges.iter().find(|r| start >= r.start && start < r.end)?;
+        let Some(range) = self.ranges.iter().find(|r| start >= r.start && start < r.end) else {
+            debug!(node = %node_id, "resolve_node miss (no file range)");
+            return None;
+        };
         let source_slice = info.span.slice(&self.merged).to_string();
+        debug!(node = %node_id, file = %range.path, "resolve_node hit");
         Some(ResolvedNode { info, file: range.path.clone(), source_slice })
     }
 
@@ -212,16 +230,28 @@ impl WfProject {
     /// the file's source is updated in place (call [`WfProject::recompile`] to
     /// rebuild). On any error the sources are left untouched.
     pub fn edit_node(&mut self, node_id: &str, ops: &[EditOp]) -> anyhow::Result<()> {
-        let file = self
-            .resolve_node(node_id)
-            .map(|r| r.file)
-            .ok_or_else(|| anyhow::anyhow!("unknown node {node_id}"))?;
-        let src = self
-            .sources
-            .get(&file)
-            .ok_or_else(|| anyhow::anyhow!("no source for {file}"))?
-            .clone();
-        let edited = apply_edits(&src, ops).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let file = match self.resolve_node(node_id).map(|r| r.file) {
+            Some(file) => file,
+            None => {
+                error!(node = %node_id, "edit_node: unknown node");
+                return Err(anyhow::anyhow!("unknown node {node_id}"));
+            }
+        };
+        let src = match self.sources.get(&file) {
+            Some(src) => src.clone(),
+            None => {
+                error!(node = %node_id, file = %file, "edit_node: no source for file");
+                return Err(anyhow::anyhow!("no source for {file}"));
+            }
+        };
+        let edited = match apply_edits(&src, ops) {
+            Ok(edited) => edited,
+            Err(e) => {
+                error!(node = %node_id, file = %file, error = %e, "edit_node: apply_edits failed");
+                return Err(anyhow::anyhow!("{e}"));
+            }
+        };
+        debug!(node = %node_id, file = %file, ops = ops.len(), "edit_node applied");
         self.sources.insert(file, edited);
         Ok(())
     }
@@ -282,12 +312,16 @@ impl WfProject {
         let sources = self.sources.iter().map(|(k, v)| (k.as_str(), v.as_str()));
         match compile_merged(sources) {
             Ok((site, merged, ranges)) => {
+                debug!(pages = site.pages.len(), nodes = site.node_map.len(), "recompile ok");
                 self.compiled = site;
                 self.merged = merged;
                 self.ranges = ranges;
                 self.error = None;
             }
-            Err(e) => self.error = Some(e.to_string()),
+            Err(e) => {
+                error!(error = %e, "recompile failed (keeping last good compile)");
+                self.error = Some(e.to_string());
+            }
         }
     }
 }
@@ -405,11 +439,20 @@ mod tests {
         assert!(p.error().is_none());
         assert!(p.compiled().pages[0].html.contains("Changed title"));
 
-        // SetStyle creates a style block on the node.
+        // SetStyle creates a style block on the node …
         p.edit_node(&heading, &[EditOp::SetStyle { node: heading.clone(), prop: "color".into(), value: "\"#ff0000\"".into() }]).unwrap();
         p.recompile();
         assert!(p.error().is_none());
         assert!(p.sources.get("src/pages/Home.wf").unwrap().contains("color: \"#ff0000\""));
+        // … AND the SSG-painted HTML must carry it as an inline style, or the
+        // inspector's live style edits never appear in the preview (the source
+        // changes but the served bytes don't). Regression guard for the engine's
+        // style_block → inline-`style=` emission.
+        assert!(
+            p.compiled().pages[0].html.contains("color: #ff0000"),
+            "compiled HTML should inline the edited style, got: {}",
+            p.compiled().pages[0].html
+        );
     }
 
     #[test]

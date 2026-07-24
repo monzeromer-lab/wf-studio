@@ -233,7 +233,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         id: ProviderId::OpenAI,
         name: "OpenAI",
-        by: "GPT-4.1",
+        by: "GPT-5.6",
         mono: "O",
         mono_bg: 0x10a37f,
         recommended: false,
@@ -265,7 +265,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         id: ProviderId::Glm,
         name: "GLM",
-        by: "Zhipu",
+        by: "Z.ai",
         mono: "Z",
         mono_bg: 0x3a7afe,
         recommended: false,

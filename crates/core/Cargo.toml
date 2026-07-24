@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+tracing.workspace = true
 webfluent.workspace = true
 wf-ai.workspace = true
 thiserror.workspace = true

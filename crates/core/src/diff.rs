@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 
+use tracing::debug;
 use webfluent::codegen::node_id::visit_nodes;
 use webfluent::lexer::Lexer;
 use webfluent::parser::ast::{Arg, ComponentRef, Expr, Program, UIElement};
@@ -96,6 +97,11 @@ pub fn diff(base: &str, proposal: &str) -> anyhow::Result<Vec<Chip>> {
 
     // Deterministic order for a stable review list.
     chips.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    debug!(
+        count = chips.len(),
+        kinds = ?chips.iter().map(|c| c.kind).collect::<Vec<_>>(),
+        "diff produced chips"
+    );
     Ok(chips)
 }
 

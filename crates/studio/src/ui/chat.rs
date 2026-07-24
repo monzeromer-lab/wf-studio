@@ -3,19 +3,20 @@
 //! open the attach / skills / design-system / API / model popovers.
 
 use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px, relative};
-use gpui_component::{StyledExt, h_flex, input::Input, v_flex};
+use gpui_component::{StyledExt, h_flex, input::Input, text::TextView, v_flex};
 
 use crate::app::StudioApp;
 use crate::state::{ChatMenu, Dir, Effort, Message, Permission, ProjectKind, Role, SKILL_NAMES, method_colors};
 use crate::theme;
 use crate::ui::widgets::icon;
 
-pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
+pub fn render(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
     let menu_open = app.chat_menu.is_some() || app.ds_picker_open || app.api_panel_open;
     v_flex()
-        .flex_none()
+        // Width is owned by the enclosing resizable panel (see studio_body).
+        .flex_1()
+        .min_w_0()
         .h_full()
-        .w(px(360.0))
         .min_h_0()
         .bg(theme::bg_base())
         .border_r_1()
@@ -28,7 +29,7 @@ pub fn render(app: &StudioApp, _window: &mut Window, cx: &mut Context<StudioApp>
                 .relative()
                 .flex_1()
                 .min_h_0()
-                .child(messages(app, cx))
+                .child(messages(app, window, cx))
                 .when(menu_open, |r| {
                     r.child(div().id("menu-backdrop").absolute().inset_0().on_click(cx.listener(|a, _, _, cx| a.close_composer_menus(cx))))
                         .child(popover(app, cx))
@@ -92,7 +93,7 @@ fn header(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
         )
 }
 
-fn messages(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
+fn messages(app: &StudioApp, window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement {
     let mut list = v_flex().id("messages").flex_1().min_h_0().overflow_y_scroll().p(px(16.0)).gap(px(14.0));
 
     if app.messages.is_empty() {
@@ -113,7 +114,7 @@ fn messages(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement {
                 .child(v_flex().gap(px(8.0)).children(sugg.into_iter().enumerate().map(|(i, s)| suggestion_btn(i, s, cx)))),
         );
     } else {
-        list = list.children(app.messages.iter().enumerate().map(|(i, m)| message_row(i, m)));
+        list = list.children(app.messages.iter().enumerate().map(|(i, m)| message_row(i, m, window, cx)));
     }
 
     if app.busy {
@@ -156,8 +157,10 @@ fn suggestion_btn(i: usize, text: &str, cx: &mut Context<StudioApp>) -> impl Int
         .on_click(cx.listener(move |a, _, window, cx| a.run_suggestion(&for_click, window, cx)))
 }
 
-fn message_row(i: usize, m: &Message) -> impl IntoElement + use<> {
+fn message_row(i: usize, m: &Message, window: &mut Window, cx: &mut Context<StudioApp>) -> impl IntoElement + use<> {
     let user = m.role == Role::User;
+    // Selectable/copyable markdown text (drag-select + Ctrl+C). Size/colour is
+    // inherited from the surrounding bubble div below.
     let mut bubble = div()
         .id(("msg", i))
         .max_w(px(282.0))
@@ -165,7 +168,7 @@ fn message_row(i: usize, m: &Message) -> impl IntoElement + use<> {
         .py(px(11.0))
         .text_size(px(13.0))
         .line_height(px(20.0))
-        .child(m.text.clone());
+        .child(TextView::markdown(("msg-text", i), m.text.clone(), window, cx).selectable(true));
     if user {
         bubble = bubble.bg(theme::accent_grad_soft()).text_color(theme::white(1.0)).rounded(px(14.0)).rounded_br(px(4.0)).shadow(theme::glow_violet());
     } else {
@@ -338,7 +341,7 @@ fn pill_btn_bordered(id: &'static str, ic: &'static str, label: SharedString, on
         .id(id)
         .flex_shrink()
         .min_w_0()
-        .max_w(px(150.0))
+        .max_w(px(184.0))
         .h(px(32.0))
         .items_center()
         .gap(px(5.0))
@@ -352,7 +355,7 @@ fn pill_btn_bordered(id: &'static str, ic: &'static str, label: SharedString, on
         .cursor_pointer()
         .hover(|s| s.bg(theme::bg_hover()).text_color(theme::text_strong()))
         .child(icon(ic, 14.0, theme::accent()))
-        .child(div().min_w_0().overflow_hidden().child(label))
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(label))
         .child(icon("chevron-down", 14.0, theme::text_muted()))
         .on_click(on_click)
 }
@@ -382,7 +385,7 @@ fn pill_btn_bordered_state(id: &'static str, ic: &'static str, label: SharedStri
         .cursor_pointer()
         .hover(|s| s.text_color(theme::text_strong()))
         .child(icon(ic, 14.0, ic_color))
-        .child(div().min_w_0().overflow_hidden().child(label))
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(label))
         .child(icon("chevron-down", 14.0, theme::text_muted()))
         .on_click(on_click)
 }
@@ -452,7 +455,10 @@ fn model_menu(app: &StudioApp, cx: &mut Context<StudioApp>) -> impl IntoElement 
         .shadow(theme::shadow_pop())
         .p(px(10.0))
         .child(menu_label("MODEL"))
-        .child(v_flex().gap(px(2.0)).children(app.provider_models().into_iter().enumerate().map(|(mi, (id, name, active))| {
+        // The model list is driven entirely by `wf_ai::ProviderKind::models()`, which
+        // ranges from 2 to 16 entries — cap it to ~6 rows with its own scroll so the
+        // EFFORT / PERMISSIONS sections below stay reachable for the long providers.
+        .child(v_flex().id("modellist").gap(px(2.0)).max_h(px(256.0)).overflow_y_scroll().children(app.provider_models().into_iter().enumerate().map(|(mi, (id, name, active))| {
             h_flex()
                 .id(("model", mi))
                 .items_center()
