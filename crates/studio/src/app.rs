@@ -683,13 +683,27 @@ impl StudioApp {
     // ── toolbar ─────────────────────────────────────────────────────────────
     pub fn set_dir(&mut self, dir: Dir, cx: &mut Context<Self>) {
         self.dir = dir;
-        self.sync_preview(cx);
+        self.apply_preview_dir(cx);
         cx.notify();
     }
     pub fn set_device(&mut self, device: Device, cx: &mut Context<Self>) {
+        // The canvas preview frame constrains the webview width per device (FR-12).
         self.device = device;
-        self.sync_preview(cx);
         cx.notify();
+    }
+
+    /// Apply the current text direction to the live preview (RTL/LTR, FR-11). The
+    /// compiled site uses logical CSS, so setting `dir` on the root flips the whole
+    /// layout — no recompile needed. Re-applied on every page load.
+    fn apply_preview_dir(&self, cx: &mut Context<Self>) {
+        let Some(preview) = &self.preview else { return };
+        let (dir, lang) = if self.dir == Dir::Rtl { ("rtl", "ar") } else { ("ltr", "en") };
+        let js = format!(
+            "try{{var e=document.documentElement;e.setAttribute('dir','{dir}');e.setAttribute('lang','{lang}');}}catch(_){{}}"
+        );
+        preview.update(cx, |w, _| {
+            let _ = w.raw().evaluate_script(&js);
+        });
     }
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
@@ -734,8 +748,8 @@ impl StudioApp {
                 ipc::Event::Select { key, additive } => self.select_node(key, additive, cx),
                 ipc::Event::Deselect => self.deselect_node(cx),
                 ipc::Event::PageLoaded => {
-                    // Re-apply the selection outline after a reload cleared it.
-                    self.sync_preview(cx);
+                    // Re-apply the direction + selection outline after a reload cleared them.
+                    self.apply_preview_dir(cx);
                     self.highlight_nodes(cx);
                 }
                 ipc::Event::RuntimeError { message } => self.on_runtime_error(message, cx),
