@@ -109,8 +109,10 @@ fn compiling_overlay(app: &StudioApp) -> impl IntoElement {
     )
 }
 
-/// BEFORE / AFTER labels + a center divider over the preview during review.
-/// The live wipe/clip is wired to the webview in the next phase.
+/// BEFORE / AFTER labels over the preview during review. The real wipe is the
+/// cursor-driven `clip-path` split inside the diff shell (§4.1, `wf_preview::DIFF_SHELL`),
+/// which also bakes in its own labels; these GPUI tags are the fallback for when
+/// the webview isn't embedded (they don't composite over the child X11 surface).
 fn review_labels(_app: &StudioApp) -> impl IntoElement {
     div()
         .absolute()

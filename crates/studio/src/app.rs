@@ -124,6 +124,9 @@ pub struct StudioApp {
     /// The output the `wf://` protocol serves, shared with the serve closure.
     /// Swapped on recompile, then the webview reloads to pick it up.
     output: Arc<RwLock<CompiledSite>>,
+    /// The compiled proposal the diff shell serves at `wf://…/proposal` during a
+    /// before/after review (§4.1). Empty except while a review is open.
+    proposal_output: Arc<RwLock<CompiledSite>>,
     pipeline_task: Option<Task<()>>,
     next_id: u64,
 }
@@ -169,10 +172,11 @@ impl StudioApp {
         let mut history = wf_core::History::new();
         history.checkpoint("Started your project", project.snapshot());
         let output = Arc::new(RwLock::new(project.compiled().clone()));
+        let proposal_output = Arc::new(RwLock::new(CompiledSite::default()));
 
         // Build the preview webview as a child of the gpui window and keep it
         // hidden until a site is generated.
-        let preview = match build_preview(window, output.clone()) {
+        let preview = match build_preview(window, output.clone(), proposal_output.clone()) {
             Ok(webview) => {
                 let entity = cx.new(|cx| WebView::new(webview, window, cx));
                 entity.update(cx, |w, _| w.hide());
@@ -289,6 +293,7 @@ impl StudioApp {
             project,
             history,
             output,
+            proposal_output,
             pipeline_task: None,
             next_id: 0,
         }
@@ -396,6 +401,40 @@ impl StudioApp {
         self.project.recompile();
         if let Ok(mut out) = self.output.write() {
             *out = self.project.compiled().clone();
+        }
+        if let Some(preview) = &self.preview {
+            preview.update(cx, |w, _| {
+                let _ = w.raw().load_url(&format!("{ORIGIN}/{}", site::PREVIEW_ENTRY));
+            });
+        }
+    }
+
+    /// Enter the before/after review (§4.1): compile the pending proposal into the
+    /// shared `proposal_output` and point the preview at the diff shell. Its two
+    /// iframes then show the live document (`/base`) and the proposal (`/proposal`),
+    /// revealed by a cursor-driven wipe.
+    fn enter_diff_review(&mut self, cx: &mut Context<Self>) {
+        let (Some(file), Some(source)) =
+            (self.proposal_file.clone(), self.proposal.as_ref().map(|p| p.proposal().to_string()))
+        else {
+            return;
+        };
+        let variant = self.project.compile_variant(&file, &source);
+        if let Ok(mut out) = self.proposal_output.write() {
+            *out = variant;
+        }
+        if let Some(preview) = &self.preview {
+            preview.update(cx, |w, _| {
+                let _ = w.raw().load_url(&format!("{ORIGIN}/__diff"));
+            });
+        }
+    }
+
+    /// Leave the before/after review: drop the proposal site and return the preview
+    /// to the live document.
+    fn exit_diff_review(&mut self, cx: &mut Context<Self>) {
+        if let Ok(mut out) = self.proposal_output.write() {
+            *out = CompiledSite::default();
         }
         if let Some(preview) = &self.preview {
             preview.update(cx, |w, _| {
@@ -1244,6 +1283,7 @@ impl StudioApp {
                                 a.sel_nodes.clear();
                                 a.highlight_nodes(cx);
                                 a.review_open = true;
+                                a.enter_diff_review(cx);
                                 a.status = Status::Compiled;
                                 let msg = if n == 0 {
                                     "That already looks the way you asked — no changes needed.".to_string()
@@ -1319,6 +1359,11 @@ impl StudioApp {
         match applied {
             Ok((source, count)) => {
                 self.project.set_source(&file, source);
+                // Drop the proposal site, then reload the live document (now with
+                // the accepted changes) — leaving the diff shell behind.
+                if let Ok(mut out) = self.proposal_output.write() {
+                    *out = CompiledSite::default();
+                }
                 self.recompile_and_reload(cx);
                 self.history.checkpoint(format!("Applied {count} change(s)"), self.project.snapshot());
                 self.proposal = None;
@@ -1341,6 +1386,7 @@ impl StudioApp {
         self.proposal_node = None;
         self.review_open = false;
         self.status = Status::Compiled;
+        self.exit_diff_review(cx);
         self.show_toast(ToastTone::Idle, "Changes discarded \u{2014} your design was left untouched.", cx);
         cx.notify();
     }
@@ -1732,10 +1778,29 @@ fn pump_gtk() {
 
 /// Build the preview webview as a child of the gpui window, serving the live
 /// [`CompiledSite`] held in `output` over `wf://`.
-fn build_preview(window: &mut Window, output: Arc<RwLock<CompiledSite>>) -> anyhow::Result<wry::WebView> {
+fn build_preview(
+    window: &mut Window,
+    output: Arc<RwLock<CompiledSite>>,
+    proposal_output: Arc<RwLock<CompiledSite>>,
+) -> anyhow::Result<wry::WebView> {
     let builder = WebViewBuilder::new()
         .with_custom_protocol("wf".into(), move |_id, request| {
-            let found = output.read().ok().and_then(|site| wf_preview::resolve(&site, request.uri().path()));
+            let path = request.uri().path();
+            // The diff shell (§4.1) and its two self-contained iframes: `/base`
+            // is the live document, `/proposal` the unaccepted variant. Assets
+            // are inlined so the frames never cross-load each other's styles.
+            let found = match path {
+                "/__diff" => Some((wf_preview::MIME_HTML, wf_preview::DIFF_SHELL.as_bytes().to_vec())),
+                "/base" | "/base/" => output
+                    .read()
+                    .ok()
+                    .map(|site| (wf_preview::MIME_HTML, wf_preview::self_contained(&site).into_bytes())),
+                "/proposal" | "/proposal/" => proposal_output
+                    .read()
+                    .ok()
+                    .map(|site| (wf_preview::MIME_HTML, wf_preview::self_contained(&site).into_bytes())),
+                _ => output.read().ok().and_then(|site| wf_preview::resolve(&site, path)),
+            };
             wf_preview::respond(found)
         })
         .with_initialization_script(boot_script())

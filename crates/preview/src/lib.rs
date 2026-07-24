@@ -18,7 +18,7 @@ mod detached;
 pub use detached::spawn_detached;
 
 pub use bridge::BRIDGE_JS;
-pub use serve::{resolve, respond, serve, MIME_CSS, MIME_HTML, MIME_JS};
+pub use serve::{resolve, respond, self_contained, serve, DIFF_SHELL, MIME_CSS, MIME_HTML, MIME_JS};
 pub use store::ArtifactStore;
 
 /// Commands into the preview host (studio → preview).

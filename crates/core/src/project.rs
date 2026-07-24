@@ -185,6 +185,19 @@ impl WfProject {
         self.recompile();
     }
 
+    /// Compile a what-if variant with one file's source replaced, WITHOUT mutating
+    /// the project — used to preview an unaccepted proposal side by side (§4.1).
+    /// Returns an empty site if the variant fails to compile.
+    pub fn compile_variant(&self, path: &str, source: &str) -> CompiledSite {
+        let ordered: Vec<(String, String)> = self
+            .sources
+            .iter()
+            .map(|(k, v)| (k.clone(), if k == path { source.to_string() } else { v.clone() }))
+            .collect();
+        let refs = ordered.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+        compile_merged(refs).map(|(site, _, _)| site).unwrap_or_default()
+    }
+
     /// Resolve a node id (from a `data-wf-node` click) to its info, source file,
     /// and exact source text. `None` if the id is unknown.
     pub fn resolve_node(&self, node_id: &str) -> Option<ResolvedNode<'_>> {

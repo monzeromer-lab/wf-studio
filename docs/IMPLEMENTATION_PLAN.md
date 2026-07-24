@@ -53,8 +53,8 @@ brain — generation, scoped edits, diff/chips/proposal, history, self-heal + de
 the eval harness — all hermetically tested; the studio wires each to the real UI. **The
 pure-code product is complete.** What remains is *operational*: the per-provider eval pass (needs
 BYO keys → pick default models), building/signing the bundles (add `assets/icon.png` + a GPL-3.0
-`LICENSE`), the manual QA sweep, and shipping to alpha users. Deferred polish: the optional M3.5
-before/after scrub and a real model picker.
+`LICENSE`), the manual QA sweep, and shipping to alpha users. The M3.5 before/after scrub and the
+real model picker (previously deferred) are now built.
 
 ### Build order (done → next)
 
@@ -63,7 +63,9 @@ before/after scrub and a real model picker.
 - **M1 — generation loop** ✅ — `ScriptedProvider`/`collect_text`, `generate_page`,
   `LANGUAGE_CARD`, keychain `KeyStore`, app wiring, `wf-evals`.
 - **M3 — scoped edits + Visual Diff Review** ✅ — `edit_node` → `diff` → chips → review panel →
-  `Proposal::apply_accepted` → reload, with inline re-prompt (FR-8). *Remaining: M3.5 scrub.*
+  `Proposal::apply_accepted` → reload, with inline re-prompt (FR-8). M3.5 before/after scrub ✅ —
+  `WfProject::compile_variant` → `wf_preview::DIFF_SHELL` two-iframe (`/base`, `/proposal`)
+  cursor-wipe, entered/left on proposal create / apply / discard.
 - **M4 — guardrails + P1** ✅ — history/undo/restore (FR-14), runtime self-heal + design-freeze
   via a style fingerprint (FR-19–22), try-it chips (FR-9), RTL/device toggles + the engine's W4
   logical-CSS audit (FR-11/12).
@@ -165,7 +167,7 @@ Edits run the same pipe but produce a **Proposal** (shadow document + chip list)
 - `gpui-component`'s `WebView` element hosts the wry webview inside the GPUI layout; we construct the `wry::WebView` ourselves (that's the crate's contract) with: custom protocol handler, init-script (the bridge), and IPC handler.
 - **RTL/LTR toggle (FR-11):** bridge sets `document.documentElement.dir` + recompile with direction config; audit of logical-vs-physical CSS lives in the webfluent workstream (NFR-3).
 - **Device toggle (FR-12):** studio constrains the WebView element's bounds to 375 / 768 / full-width. Pure layout, no webview tricks.
-- **Before/after scrub (FR-5):** the webview loads a minimal *diff shell* page containing two iframes (`wf://base/…`, `wf://proposal/…`) overlaid with a `clip-path` split; the scrub slider is native GPUI and drives the clip via IPC. One webview instance, no flicker, scroll positions synced by the shell.
+- **Before/after scrub (FR-5):** ✅ on a proposal, `WfProject::compile_variant` shadow-compiles the unaccepted source and the webview loads a minimal *diff shell* (`wf_preview::DIFF_SHELL`) with two overlaid iframes — `/base` (live document) under `/proposal` (variant), each served fully self-contained (`self_contained` inlines CSS/JS so the frames never cross-load assets). A `clip-path` wipe follows the cursor via a transparent capture overlay (the iframes are `pointer-events:none`); `window.__setClip(pct)` is also exposed so a host/GPUI control can drive the split over IPC. One webview instance; apply/discard reloads the live document.
 
 ### 4.2 DOM ↔ AST node identity (FR-3, FR-4, FR-7 — the reconciliation engine)
 
